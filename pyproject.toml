@@ -28,6 +28,7 @@ dev = [
     "pytest>=7.4",
     "pytest-cov>=4.1",
     "ruff>=0.4",
+    "black>=24.0",  # required by pandera.io to_script (schema auto-draft)
 ]
 # DBAPI drivers — SQLAlchemy needs one per engine; install via extras flag.
 # e.g. pip install -e ".[postgresql]"  (CI tests the SQL path with sqlite)

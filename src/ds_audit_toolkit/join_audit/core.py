@@ -20,10 +20,14 @@ mismatches are reported separately per column.
 
 import datacompy
 import pandas as pd
+import recordlinkage as rl
 
 from ds_audit_toolkit.types import JoinAuditResult, KeyQualityReport
 
 _MAX_UNMATCHED_SAMPLE = 100
+_FUZZY_DEFAULT_SCORE_THRESHOLD = 0.85
+_FUZZY_FULL_INDEX_MAX_PAIRS = 1_000_000
+_FUZZY_SORTED_NEIGHBOURHOOD_WINDOW = 5
 
 
 def check_key_quality(left: pd.DataFrame, right: pd.DataFrame, key: str) -> KeyQualityReport:
@@ -53,18 +57,63 @@ def check_key_quality(left: pd.DataFrame, right: pd.DataFrame, key: str) -> KeyQ
     )
 
 
+def _fuzzy_key_confidence(
+    left_keys: pd.Series, right_keys: pd.Series, key: str, score_threshold: float
+) -> dict[str, float]:
+    """Best Jaro-Winkler score per left key that fuzzily matches a right key.
+
+    Both series hold the keys that survived the exact pass (unique values per
+    side — the duplicate gate already ran). Candidate pairs come from a full
+    index while the universe is small (no pair can be missed); larger volumes
+    fall back to a sorted-neighbourhood index on the key. recordlinkage needs
+    unique indexes, so temporary positional-indexed copies are compared.
+    `Compare.string` is called without `threshold` on purpose: any non-None
+    threshold (even 0.0) binarizes the scores in recordlinkage 0.16, while
+    None keeps the continuous 0-1 Jaro-Winkler values.
+
+    Returns {} when there are no candidates, no pairs, or no pair reaching
+    `score_threshold`.
+    """
+    lframe = left_keys.dropna().to_frame(name=key).reset_index(drop=True)
+    rframe = right_keys.dropna().to_frame(name=key).reset_index(drop=True)
+    if lframe.empty or rframe.empty:
+        return {}
+    indexer = rl.Index()
+    if len(lframe) * len(rframe) <= _FUZZY_FULL_INDEX_MAX_PAIRS:
+        indexer.full()
+    else:
+        indexer.sortedneighbourhood(on=key, window=_FUZZY_SORTED_NEIGHBOURHOOD_WINDOW)
+    pairs = indexer.index(lframe, rframe)
+    if len(pairs) == 0:
+        return {}
+    comparer = rl.Compare()
+    comparer.string(key, key, method="jarowinkler", label="score")
+    scores = comparer.compute(pairs, lframe, rframe)["score"]
+    passing = scores[scores >= score_threshold]
+    if passing.empty:
+        return {}
+    best_per_left = passing.groupby(level=0).max()
+    return {str(lframe.at[pos, key]): float(score) for pos, score in best_per_left.items()}
+
+
 def audit_join(left: pd.DataFrame, right: pd.DataFrame, key: str,
                match_threshold: float = 0.95, fuzzy_fallback: bool = True,
                abs_tol: float | dict[str, float] = 0.0,
                rel_tol: float | dict[str, float] = 0.0,
-               left_name: str = "left", right_name: str = "right") -> JoinAuditResult:
+               left_name: str = "left", right_name: str = "right",
+               fuzzy_score_threshold: float = _FUZZY_DEFAULT_SCORE_THRESHOLD) -> JoinAuditResult:
     """Join two datasets and audit match quality.
 
     Builds a datacompy exact-match report (row counts, unmatched keys,
     column-level mismatch rates, dtype mismatches). If the match rate falls
-    below `match_threshold` and `fuzzy_fallback` is set, the fuzzy pass
-    (recordlinkage; Splink for larger volumes) reports match confidence
-    instead of a binary yes/no — Phase 3.
+    below `match_threshold` and `fuzzy_fallback` is set, a recordlinkage
+    fuzzy pass adds evidence instead of raising: the keys unmatched on each
+    side are compared with Jaro-Winkler similarity, `fuzzy_used` flags the
+    pass, and `fuzzy_confidence` maps each left key with at least one right
+    partner scoring >= `fuzzy_score_threshold` to its best score (float 0-1,
+    {} when nothing matches). Match rate and matched rows stay the
+    EXACT-match numbers; fuzzy results are additive evidence. Splink remains
+    the path for larger volumes.
 
     `abs_tol`/`rel_tol` pass through to PandasCompare as flat defaults or
     per-column dicts.
@@ -113,8 +162,11 @@ def audit_join(left: pd.DataFrame, right: pd.DataFrame, key: str,
         datacompy_report=data.to_dict(),
     )
     if match_rate < match_threshold and fuzzy_fallback:
-        raise NotImplementedError(
-            f"Match rate {match_rate:.3f} is below threshold {match_threshold:.2f}; "
-            "fuzzy fallback lands in Phase 3"
+        result.fuzzy_used = True
+        result.fuzzy_confidence = _fuzzy_key_confidence(
+            left[key][~left[key].isin(right[key])],
+            right[key][~right[key].isin(left[key])],
+            key,
+            fuzzy_score_threshold,
         )
     return result

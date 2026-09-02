@@ -91,8 +91,71 @@ def test_audit_join_duplicate_keys_raise():
 
 def test_audit_join_below_threshold_triggers_fuzzy():
     left, right = make_frames()
-    with pytest.raises(NotImplementedError, match="Phase 3"):
-        audit_join(left, right, "id")
+    result = audit_join(left, right, "id")
+    assert result.match_rate == pytest.approx(0.75)
+    assert result.matched_rows == 3
+    assert result.fuzzy_used is True
+    assert result.fuzzy_confidence == {}
+
+
+def test_audit_join_fuzzy_matches_similar_keys():
+    left = pd.DataFrame({"id": ["alice smith", "bob jones"], "amt": [1.0, 2.0]})
+    right = pd.DataFrame({"id": ["alicia smyth", "bobb jones"], "amt": [1.0, 2.0]})
+    result = audit_join(left, right, "id")
+    assert result.fuzzy_used is True
+    assert result.match_rate == 0.0
+    assert result.matched_rows == 0
+    assert result.fuzzy_confidence == {
+        "alice smith": pytest.approx(0.9085, abs=1e-3),
+        "bob jones": pytest.approx(0.9767, abs=1e-3),
+    }
+
+
+def test_audit_join_fuzzy_confidence_bounds_and_unmatched_only():
+    left = pd.DataFrame({"id": ["a", "b", "katherine"], "v": [1, 2, 3]})
+    right = pd.DataFrame({"id": ["a", "b", "catherine"], "v": [1, 2, 3]})
+    result = audit_join(left, right, "id")
+    assert result.matched_rows == 2
+    assert result.match_rate == pytest.approx(2 / 3)
+    assert result.fuzzy_used is True
+    assert set(result.fuzzy_confidence) == {"katherine"}
+    assert all(0.0 <= score <= 1.0 for score in result.fuzzy_confidence.values())
+    assert result.fuzzy_confidence["katherine"] == pytest.approx(0.9259, abs=1e-3)
+
+
+def test_audit_join_fuzzy_score_threshold_is_enforced():
+    left = pd.DataFrame({"id": ["abc"], "v": [1]})
+    right = pd.DataFrame({"id": ["abd"], "v": [1]})
+    below = audit_join(left, right, "id")
+    assert below.fuzzy_used is True
+    assert below.fuzzy_confidence == {}
+    above = audit_join(left, right, "id", fuzzy_score_threshold=0.8)
+    assert above.fuzzy_confidence == {"abc": pytest.approx(0.8222, abs=1e-3)}
+
+
+def test_audit_join_fuzzy_transposed_digits():
+    left = pd.DataFrame({"id": ["1987-03-14"], "v": [1]})
+    right = pd.DataFrame({"id": ["1987-03-41"], "v": [1]})
+    result = audit_join(left, right, "id")
+    assert result.fuzzy_used is True
+    assert result.fuzzy_confidence == {"1987-03-14": pytest.approx(0.98, abs=1e-3)}
+
+
+def test_audit_join_fuzzy_empty_left_frame():
+    left = pd.DataFrame({"id": pd.Series([], dtype=str), "v": pd.Series([], dtype=float)})
+    right = pd.DataFrame({"id": ["a"], "v": [1.0]})
+    result = audit_join(left, right, "id")
+    assert result.match_rate == 0.0
+    assert result.fuzzy_used is True
+    assert result.fuzzy_confidence == {}
+
+
+def test_audit_join_below_threshold_without_fuzzy_no_fuzzy_evidence():
+    left, right = make_frames()
+    result = audit_join(left, right, "id", fuzzy_fallback=False)
+    assert result.match_rate < result.match_threshold
+    assert result.fuzzy_used is False
+    assert result.fuzzy_confidence is None
 
 
 def test_audit_join_below_threshold_without_fuzzy_returns_report():
