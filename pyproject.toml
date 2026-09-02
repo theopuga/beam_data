@@ -40,3 +40,7 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+
+[tool.ruff.lint]
+# TRY004: malformed config content raises ValueError uniformly, not TypeError
+ignore = ["TRY004"]
