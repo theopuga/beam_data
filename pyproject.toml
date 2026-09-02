@@ -29,6 +29,11 @@ dev = [
     "pytest-cov>=4.1",
     "ruff>=0.4",
 ]
+# DBAPI drivers — SQLAlchemy needs one per engine; install via extras flag.
+# e.g. pip install -e ".[postgresql]"  (CI tests the SQL path with sqlite)
+postgresql = ["psycopg2-binary>=2.9"]
+snowflake = ["snowflake-sqlalchemy>=1.6"]
+mssql = ["pyodbc>=5.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
