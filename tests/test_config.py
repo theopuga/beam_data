@@ -89,6 +89,26 @@ def test_bad_threshold_raises(tmp_path):
         load_config(path)
 
 
+def test_per_column_tolerance_mapping(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        "sources:\n  a:\n    conn: sqlite://x\n    table: t\n    key: k\n    key_type: fsa\n"
+        "join:\n  abs_tol:\n    balance: 0.01\n",
+    )
+    cfg = load_config(path)
+    assert cfg.join.abs_tol == {"balance": 0.01}
+
+
+def test_bad_tolerance_raises(tmp_path):
+    path = write_yaml(
+        tmp_path,
+        "sources:\n  a:\n    conn: sqlite://x\n    table: t\n    key: k\n    key_type: fsa\n"
+        "join:\n  abs_tol: wide\n",
+    )
+    with pytest.raises(ValueError, match="abs_tol"):
+        load_config(path)
+
+
 def test_join_defaults_fill_in(tmp_path):
     path = write_yaml(
         tmp_path,

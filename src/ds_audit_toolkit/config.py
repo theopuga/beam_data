@@ -9,6 +9,7 @@ committed YAML files.
 import os
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import yaml
 
@@ -35,8 +36,8 @@ class JoinConfig:
 
     match_threshold: float = 0.95
     fuzzy_fallback: bool = True
-    abs_tol: float = 0.0
-    rel_tol: float = 0.0
+    abs_tol: float | dict[str, float] = 0.0
+    rel_tol: float | dict[str, float] = 0.0
 
 
 @dataclass
@@ -63,6 +64,17 @@ def _expand_env(value: str, ctx: str) -> str:
         return os.environ[name]
 
     return _ENV_VAR.sub(repl, value)
+
+
+def _validate_tol(value: Any, ctx: str) -> float | dict[str, float]:
+    """Tolerance: a flat number or a per-column mapping (PLAN.md section 6)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, dict)):
+        raise ValueError(f"{ctx}: must be a number or a column->number mapping")
+    if isinstance(value, dict):
+        for column, tol in value.items():
+            if isinstance(tol, bool) or not isinstance(tol, (int, float)):
+                raise ValueError(f"{ctx}.{column}: must be a number")
+    return value
 
 
 def load_config(config_path: str) -> PipelineConfig:
@@ -110,8 +122,8 @@ def load_config(config_path: str) -> PipelineConfig:
     join = JoinConfig(
         match_threshold=float(join_raw.get("match_threshold", 0.95)),
         fuzzy_fallback=bool(join_raw.get("fuzzy_fallback", True)),
-        abs_tol=float(join_raw.get("abs_tol", 0.0)),
-        rel_tol=float(join_raw.get("rel_tol", 0.0)),
+        abs_tol=_validate_tol(join_raw.get("abs_tol", 0.0), "join.abs_tol"),
+        rel_tol=_validate_tol(join_raw.get("rel_tol", 0.0), "join.rel_tol"),
     )
     if not 0.0 <= join.match_threshold <= 1.0:
         raise ValueError(f"{config_path}: join.match_threshold must be in [0, 1]")
