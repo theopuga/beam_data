@@ -12,7 +12,9 @@ Output is advisory, not an auto-drop: the analyst decides what to exclude.
 
 from typing import Any
 
+from ds_audit_toolkit.types import FeatureFlagReport
 
-def flag_features(df: Any, target_column: str, time_column: str | None = None) -> Any:
+
+def flag_features(df: Any, target_column: str, time_column: str | None = None) -> FeatureFlagReport:
     """Return a per-feature flag report (leak_score, predictive_score, reason)."""
     raise NotImplementedError("flags land in Phases 5-6")

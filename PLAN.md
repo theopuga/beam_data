@@ -175,3 +175,44 @@ report.save("reports/client_geo_join.html")
   needs a real number from a pilot dataset.
 - Where do run reports live — local `reports/` folder, or pushed somewhere
   shared (Confluence, S3, internal dashboard)?
+
+## 9. Library integration audit (verified against current upstream docs)
+
+The skeleton's stage contracts are designed around how these libraries
+actually behave today — not as black boxes.
+
+**datacompy — v1 line (v0.19.x EOL; pyproject pins `datacompy>=1.0`)**
+- Entry point: `datacompy.PandasCompare(df1, df2, join_columns=key, abs_tol=,
+  rel_tol=)` — replaces the v0 `Compare` naming.
+- Structured results: `compare.build_report_data()` → typed `ReportData`
+  (`row_summary.unequal_rows`, `mismatch_stats.stats[...].column`) with
+  `.to_dict()` / `.render()` / `.save("report.html")`. This is the source
+  feeding `JoinAuditResult` and the HTML report — no string-report parsing.
+- Per-column tolerances (`abs_tol={"balance": 0.01}`) directly address the
+  §6 limitation (a $0.01 rounding diff vs a genuinely wrong value). v1 starts
+  with flat `abs_tol`/`rel_tol` in `JoinConfig`; per-column dicts are the
+  planned refinement.
+- **Hard constraint:** datacompy requires a unique join key per row — it
+  errors on duplicates. `check_key_quality` therefore gates `audit_join`
+  (fail fast or dedupe first).
+- Backends exist for Spark/Snowflake/Polars (extras) — relevant if §8's
+  "Snowflake connector" answer lands.
+
+**pandera — 0.33 (pyproject pins `pandera>=0.33`)**
+- Canonical namespace: `import pandera.pandas as pa`.
+- Auto-draft path: `pandera.schema_inference.pandas.infer_schema(df)` →
+  `pandera.io.pandas_io.to_script()` → written to
+  `config/schemas/<dataset>.py` (importable Python, hand-editable,
+  version-controlled — exactly the §3 workflow).
+- Enforcement: `schema.validate(df, lazy=True)` collects ALL failure cases
+  into one `pa.errors.SchemaErrors` (failure_cases table) — mapped to
+  `SchemaValidationResult.failures` instead of raising on first error.
+- Drafted schemas use `strict=True`, `coerce=False` so dtype drift and
+  unexpected columns are reported, not silently absorbed.
+- Pandera also ships a CLI and PyArrow/polars backends — a later escape hatch
+  if the dataframe interface widens beyond pandas.
+
+**recordlinkage — stale (last release years old, pandas-only)**
+- Fine for v1 pairwise fuzzy fallback on small/medium data; `Splink`
+  remains the escalation path for larger volumes per §3. If recordlinkage
+  blocks a Python upgrade, switch Phase 3 to Splink rather than forking it.

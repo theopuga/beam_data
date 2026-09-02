@@ -11,11 +11,12 @@ requires-python = ">=3.10"
 license = { text = "Proprietary" }
 dependencies = [
     "pandas>=2.0",
+    "scipy>=1.10,<1.16",  # 1.16+ wheel DLLs blocked by local Application Control policy (WDAC); revisit if IT allowlists
     "sqlalchemy>=2.0",
     "pyyaml>=6.0",
-    "datacompy>=0.10",
+    "datacompy>=1.0",
     "recordlinkage>=0.15",
-    "pandera>=0.18",
+    "pandera>=0.33",
     "feature-engine>=1.6",
     "xgboost>=2.0",
     "scikit-learn>=1.3",
