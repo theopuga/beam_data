@@ -20,6 +20,9 @@ In scope:
   `get(name)`; SQLite files queried via stdlib sqlite3
 - `query(sql)` — SQL joining the tables via DuckDB (`sql` extra);
   SQLite via sqlite3 directly
+- `link()` — connect two tables on identifiers (FSA, client id, postal
+  code, ...): standardize keys, report duplicates/nulls/dtype mismatches,
+  join, and report match coverage with unmatched-key samples
 - Extensible reader registry (`register_reader`) so "other types of data
   files" are one registration away
 - Optional YAML catalog mapping dataset names to paths, with `${VAR}` env
@@ -36,9 +39,13 @@ Out of scope (v1):
 src/localdb/
 ├── readers/core.py    # extension -> pandas loader registry (csv, tsv, parquet,
 │                      # excel, json, sqlite) + read()
-├── tables.py          # Tables: a folder of files or a SQLite file; names/get/query
+├── keys.py            # identifier standardization registry (postal_code, fsa,
+│                      # client_id, phone, email) + register_kind
+├── link.py            # link_tables/LinkResult: standardize, quality checks,
+│                      # join, match coverage report
+├── tables.py          # Tables: a folder of files or a SQLite file; names/get/query/link
 ├── catalog.py         # optional YAML: dataset name -> path
-└── __init__.py        # public API: read, tables, Tables, register_reader
+└── __init__.py        # public API: read, tables, link, keys, register_*
 ```
 
 Dependency direction: `database` -> `readers`; `catalog` standalone; no

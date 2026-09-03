@@ -15,17 +15,23 @@ file) is a set of tables you can open by name and join with SQL.
 from pathlib import Path
 
 from localdb.catalog import load_catalog
+from localdb.keys import register_kind, standardize
+from localdb.link import LinkResult, link_tables
 from localdb.readers.core import read, register_reader, supported_extensions
 from localdb.tables import Tables
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "LinkResult",
     "Tables",
     "__version__",
+    "link_tables",
     "load_catalog",
     "read",
+    "register_kind",
     "register_reader",
+    "standardize",
     "supported_extensions",
     "tables",
 ]

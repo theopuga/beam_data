@@ -7,6 +7,11 @@ queries, 30+ tests). Remaining:
 
 - [ ] Pilot on the real downloaded data folder — the actual file set this is
       meant for; may surface format quirks (encodings, headers, dates)
+- [ ] Pilot `ts.link()` on the real identifier pair (postal code / FSA /
+      client id); register project-specific key cleaners where the shipped
+      ones fall short
+- [ ] Fuzzy key fallback for links with low match rates (recordlinkage or
+      Splink) — only if the pilot shows exact matching is not enough
 - [ ] Add readers for any project-specific file types found in the pilot
       (`register_reader`)
 - [ ] Consider chunking/sampling for files too big for memory

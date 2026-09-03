@@ -46,6 +46,28 @@ Custom file types register one reader:
 localdb.register_reader("myext", my_loader_fn)
 ```
 
+## Linking tables on identifiers
+
+The end-goal workflow: connect different files on FSA, client id, postal
+code, etc. Keys are standardized first (format messiness removed), quality
+is reported, and the joined table comes back with a match report.
+
+```python
+result = ts.link("clients", "fsa_lookup",
+                 left_on="postal_code", right_on="fsa",
+                 left_key_type="fsa", right_key_type="fsa")
+
+result.joined          # the merged DataFrame
+result.match_rate      # share of keys found on both sides
+result.unmatched_left  # sample of keys with no partner
+result.duplicates      # per-side duplicate key counts
+result.nulls           # per-side null key counts
+```
+
+Shipped key cleaners: `postal_code`, `fsa`, `client_id`, `phone`, `email`.
+Register your own with `localdb.register_kind("kind", fn)`. Linking is
+advisory: duplicates and mismatches are reported, never dropped silently.
+
 ## Development
 
 ```bash

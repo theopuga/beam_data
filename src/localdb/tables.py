@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from localdb.link import LinkResult, link_tables
 from localdb.readers.core import read, supported_extensions
 
 _SQLITE_SUFFIXES = {".sqlite", ".db", ".sqlite3"}
@@ -88,6 +89,30 @@ class Tables:
             return con.execute(sql).df()
         finally:
             con.close()
+
+    def link(self, left_table: str, right_table: str, left_on: str,
+             right_on: str | None = None, left_key_type: str | None = None,
+             right_key_type: str | None = None, how: str = "inner",
+             **get_kwargs: Any) -> LinkResult:
+        """Link two tables in this set on identifier columns.
+
+        Convenience over get() + link_tables: both tables are read, keys are
+        standardized per the given key types, and a LinkResult (joined table
+        + match report) is returned. See localdb.link.link_tables.
+        """
+        left = self.get(left_table, **get_kwargs)
+        right = self.get(right_table, **get_kwargs)
+        return link_tables(
+            left,
+            right,
+            left_on,
+            right_on=right_on,
+            left_key_type=left_key_type,
+            right_key_type=right_key_type,
+            how=how,
+            left_name=left_table,
+            right_name=right_table,
+        )
 
     def _files_with_stem(self, stem: str) -> list[Path]:
         return sorted(
