@@ -1,218 +1,85 @@
-# ds-audit-toolkit — Project Plan
+# localdb — project plan
 
 ## 1. Problem statement
 
-Every data science project starts with the same unglamorous work: pull data from
-multiple sources, standardize join keys, merge, audit the merge for errors, validate
-the resulting schema, and then figure out which features are safe to feed a model
-(vs. which are noise, duplicates, or leakage). Today this is rebuilt from scratch
-per project, mostly by hand, with no consistent audit trail.
+Datasets are downloaded ahead of time — CSV/Parquet/JSON extracts, SQLite
+files — and every script re-solves the same trivial-but-annoying plumbing:
+finding files, remembering formats, hardcoding paths, ad hoc pd.read_* calls.
+There is no single "open the database" step for data that is already local.
 
-**Goal:** a single internal package that turns this checklist into one reusable,
-config-driven pipeline, producing a report artifact at each stage — so joins,
-validation, and feature selection are governed and reproducible instead of ad hoc.
+**Goal:** a small Python package that treats a folder of downloaded data
+files (or a SQLite file) as a database: discover tables by name, read them
+into pandas, optionally run SQL across files. No connections, no servers.
 
 ## 2. Scope (v1)
 
 In scope:
-- Connect to multiple relational sources with one interface
-- Standardize common key types (postal code / FSA, client IDs, phone, etc.)
-- Join two datasets on a key, with an automated match-quality audit
-- Fuzzy-match fallback when exact-key match rate is too low
-- Schema validation (auto-drafted, then checked in and versioned)
-- Feature flagging for modeling: leakage, non-predictive, target-correlated
-- One orchestrated pipeline call producing a single report per run
+- `read(path)` — one file -> DataFrame, format chosen by extension
+- `connect(folder_or_sqlite)` — folder-as-database: `list_tables()`,
+  `get_table(name)`; SQLite files queried via stdlib sqlite3
+- `query(sql)` — SQL across the folder's files via DuckDB (`sql` extra);
+  SQLite via sqlite3 directly
+- Extensible reader registry (`register_reader`) so "other types of data
+  files" are one registration away
+- Optional YAML catalog mapping dataset names to paths, with `${VAR}` env
+  expansion so absolute locations stay out of committed files
 
-Out of scope for v1 (revisit later):
-- Automated fixing/resolution of mismatches (human judgment stays in the loop)
-- Multi-way (3+ dataset) native audits — chain pairwise for now
-- Non-tabular data (text, images)
-- Streaming / real-time sources
+Out of scope (v1):
+- Live database connections (the data is already downloaded)
+- Writing/syncing back to sources
+- Schema validation, joins, audits — the prior toolkit scope was retired
 
 ## 3. Architecture
 
 ```
-ds-audit-toolkit/
-├── connectors/          # pull from DBs/files into a common dataframe interface
-├── standardize/          # key formatting & type coercion registry
-├── join_audit/            # match report (exact) + fuzzy fallback + confidence scores
-├── schema_validate/     # pandera-based rule enforcement, auto-drafted schemas
-├── feature_flags/       # leakage / non-predictive / target detection
-├── reporting/             # renders one HTML/markdown report per pipeline run
-├── config/                  # YAML pipeline configs (per project/dataset pair)
-├── tests/
-├── pipeline.py            # orchestrates the above end-to-end
-├── pyproject.toml
-└── README.md
+src/localdb/
+├── readers/core.py    # extension -> pandas loader registry (csv, tsv, parquet,
+│                      # excel, json, sqlite) + read()
+├── database.py        # Database: folder-as-db or SQLite file; list/get/query
+├── catalog.py         # optional YAML: dataset name -> path
+└── __init__.py        # public API: read, connect, Database, register_reader
 ```
 
-### Module responsibilities
+Dependency direction: `database` -> `readers`; `catalog` standalone; no
+module imports the package root (no cycles).
 
-**connectors/**
-- `get_table(conn_str, table_or_query) -> pd.DataFrame`
-- SQLAlchemy under the hood — one function signature regardless of DB engine
-- Sources declared in a YAML config, not hardcoded, so adding a source is a config
-  line, not new code
+## 4. Usage
 
-**standardize/**
-- Registry of known key types, each with its own cleaning function:
-  `standardize(df, column, kind="postal_code")`
-- Ship with: `postal_code`, `fsa`, `client_id`, `phone`, `email`
-- Easy to register a new `kind` without touching core logic
+```python
+import localdb
 
-**join_audit/**
-- Wraps `datacompy` for the exact-match report (row counts, unmatched keys,
-  column-level mismatch rates, dtype mismatches)
-- If match rate falls below a configurable threshold (e.g. 95%), automatically
-  triggers a fuzzy pass via `recordlinkage` (or `Splink` for larger volumes) and
-  reports match confidence instead of a binary yes/no
-- Pre-join key-quality checks: duplicate keys, null keys, dtype mismatches between
-  sides (a common silent cause of false non-matches)
+df = localdb.read("data/clients.csv")            # single file
 
-**schema_validate/**
-- `pandera`-based validation
-- On first run against a new dataset: auto-draft a schema (infer dtype,
-  nullability, uniqueness) and write it to `config/schemas/<dataset>.py`
-- On subsequent runs: enforce the checked-in schema (now hand-editable and
-  version-controlled, not regenerated blindly)
-
-**feature_flags/** — the core value-add beyond existing tools
-- *Leakage — adversarial validation*: train XGBoost to classify train vs.
-  holdout (or train vs. out-of-time split, if a time column exists). Features
-  with high importance in that model are flagged — they're encoding row
-  provenance, not signal.
-- *Leakage — target correlation*: flag features with near-1.0 correlation
-  (numeric) or mutual information (categorical) with the target — catches
-  accidental duplicate/post-outcome columns.
-- *Leakage — temporal*: if columns are tagged with an "available-as-of"
-  timestamp, flag any feature that becomes available after the target event.
-- *Non-predictive*: constant / near-zero-variance columns
-  (`feature-engine DropConstantFeatures`), duplicate columns
-  (`DropDuplicateFeatures`), low permutation importance.
-- Output is a **flag report**, not an auto-drop — columns get a `leak_score`,
-  `predictive_score`, and `reason`; the analyst decides what to exclude.
-
-**reporting/**
-- One HTML/markdown report per pipeline run combining: join audit results,
-  schema validation results, feature flag table
-- Meant to be attachable to a PR, doc, or review — audit evidence, not just
-  console output
-
-**pipeline.py**
-- `run_audit(config_path)` → connects, standardizes, joins + audits, validates
-  schema, and (if `target_column` is set in config) runs feature flagging
-- Single entry point; everything else is composable if someone only needs one
-  stage
-
-## 4. Config-driven usage (target UX)
+db = localdb.connect("data/downloads/")          # folder as database
+db.list_tables()                                  # ["clients", "fsa_lookup", ...]
+df = db.get_table("clients")                      # by stem, any format
+df = db.query("SELECT * FROM clients JOIN refs USING (id)")  # needs localdb[sql]
+```
 
 ```yaml
-# config/client_geo_join.yaml
-sources:
-  clients:
-    conn: postgresql://.../warehouse
-    table: clients
-    key: postal_code
-    key_type: postal_code
-  geo:
-    conn: postgresql://.../geo
-    table: fsa_lookup
-    key: fsa
-    key_type: fsa
-
-join:
-  match_threshold: 0.95
-  fuzzy_fallback: true
-
-target_column: churned      # omit to skip feature flagging
-time_column: signup_date    # optional, enables temporal leakage checks
+# catalog.yaml — datasets declared once, referenced by name
+clients: data/clients.csv
+fsa_lookup: ${DOWNLOAD_DIR}/fsa_lookup.parquet
 ```
 
 ```python
-from ds_audit_toolkit import run_audit
-report = run_audit("config/client_geo_join.yaml")
-report.save("reports/client_geo_join.html")
+tables = localdb.load_catalog("catalog.yaml")
+df = localdb.read(tables["fsa_lookup"])
 ```
 
 ## 5. Milestones
 
 | Phase | Deliverable | Notes |
 |---|---|---|
-| 0 | Repo scaffold, `pyproject.toml`, CI skeleton | empty modules, tests stubbed |
-| 1 | `connectors` + `standardize` | working against 2 real internal sources |
-| 2 | `join_audit` (exact match via datacompy) | pre-join key checks + match report |
-| 3 | `join_audit` fuzzy fallback | recordlinkage integration, threshold trigger |
-| 4 | `schema_validate` | auto-draft + checked-in pandera schemas |
-| 5 | `feature_flags` v1 | non-predictive + target correlation flags |
-| 6 | `feature_flags` v2 | adversarial validation + temporal leakage |
-| 7 | `reporting` + `pipeline.py` | single end-to-end config-driven call |
-| 8 | Pilot on one real work project | validate against an actual audit you'd otherwise do by hand |
+| 0 | Package skeleton, pyproject, CI | done |
+| 1 | `readers` + `Database` (folder + sqlite) | done |
+| 2 | YAML catalog + duckdb `query()` | done |
+| 3 | Real-data pilot on the actual downloaded sets | next: needs the real folder |
 
-## 6. Known limitations to carry forward (from prior tool evaluation)
+## 6. Known limitations
 
-- Match auditing is still row-level, not semantic — a $0.01 rounding diff and a
-  genuinely wrong value both show up as "mismatch"; tolerance thresholds need
-  per-column tuning over time.
-- Fuzzy matching adds compute cost — fine for pairwise audits, not built for
-  warehouse-scale (10s of millions of rows) without sampling or a Spark backend.
-- Feature flags are advisory, not authoritative — adversarial validation and
-  correlation thresholds catch *likely* leakage, not certain leakage; still
-  requires a human sanity check before dropping a feature.
-- Governance: v1 produces a report file, not a queryable audit log. If this
-  needs to be defensible for compliance later, revisit storing run outputs in a
-  structured log (e.g., append to a tracked table) rather than only HTML.
-
-## 7. Dependencies (initial)
-
-`sqlalchemy`, `datacompy`, `recordlinkage`, `pandera`, `feature-engine`,
-`xgboost`, `scikit-learn`, `pandas`, `pyyaml`, `jinja2` (reporting)
-
-## 8. Open questions
-
-- Which internal DBs need connectors first (Postgres only, or also
-  Snowflake/SQL Server)?
-- Match-rate threshold for triggering fuzzy fallback — 95% is a placeholder,
-  needs a real number from a pilot dataset.
-- Where do run reports live — local `reports/` folder, or pushed somewhere
-  shared (Confluence, S3, internal dashboard)?
-
-## 9. Library integration audit (verified against current upstream docs)
-
-The skeleton's stage contracts are designed around how these libraries
-actually behave today — not as black boxes.
-
-**datacompy — v1 line (v0.19.x EOL; pyproject pins `datacompy>=1.0`)**
-- Entry point: `datacompy.PandasCompare(df1, df2, join_columns=key, abs_tol=,
-  rel_tol=)` — replaces the v0 `Compare` naming.
-- Structured results: `compare.build_report_data()` → typed `ReportData`
-  (`row_summary.unequal_rows`, `mismatch_stats.stats[...].column`) with
-  `.to_dict()` / `.render()` / `.save("report.html")`. This is the source
-  feeding `JoinAuditResult` and the HTML report — no string-report parsing.
-- Per-column tolerances (`abs_tol={"balance": 0.01}`) directly address the
-  §6 limitation (a $0.01 rounding diff vs a genuinely wrong value). v1 starts
-  with flat `abs_tol`/`rel_tol` in `JoinConfig`; per-column dicts are the
-  planned refinement.
-- **Hard constraint:** datacompy requires a unique join key per row — it
-  errors on duplicates. `check_key_quality` therefore gates `audit_join`
-  (fail fast or dedupe first).
-- Backends exist for Spark/Snowflake/Polars (extras) — relevant if §8's
-  "Snowflake connector" answer lands.
-
-**pandera — 0.33 (pyproject pins `pandera>=0.33`)**
-- Canonical namespace: `import pandera.pandas as pa`.
-- Auto-draft path: `pandera.schema_inference.pandas.infer_schema(df)` →
-  `pandera.io.pandas_io.to_script()` → written to
-  `config/schemas/<dataset>.py` (importable Python, hand-editable,
-  version-controlled — exactly the §3 workflow).
-- Enforcement: `schema.validate(df, lazy=True)` collects ALL failure cases
-  into one `pa.errors.SchemaErrors` (failure_cases table) — mapped to
-  `SchemaValidationResult.failures` instead of raising on first error.
-- Drafted schemas use `strict=True`, `coerce=False` so dtype drift and
-  unexpected columns are reported, not silently absorbed.
-- Pandera also ships a CLI and PyArrow/polars backends — a later escape hatch
-  if the dataframe interface widens beyond pandas.
-
-**recordlinkage — stale (last release years old, pandas-only)**
-- Fine for v1 pairwise fuzzy fallback on small/medium data; `Splink`
-  remains the escalation path for larger volumes per §3. If recordlinkage
-  blocks a Python upgrade, switch Phase 3 to Splink rather than forking it.
+- Whole files load into memory; no chunking/sampling yet
+- `get_table` prefers nothing on ambiguous stems — it raises; rename files
+- duckdb views only cover csv/tsv/parquet/json (excel files still readable
+  via `get_table`, just not SQL-joinable)
+- Reader set is fixed at import; per-project readers register at runtime

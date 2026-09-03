@@ -1,49 +1,56 @@
-# ds-audit-toolkit
+# localdb
 
-Config-driven pipeline that turns the per-project data-prep checklist — pull,
-standardize keys, join, audit the merge, validate schema, flag features — into
-one reusable, reproducible workflow with a report artifact at each stage.
-
-See `PLAN.md` for the full problem statement, scope, and milestones.
+Treat a folder of already-downloaded data files — CSV, Parquet, JSON, Excel,
+or a SQLite file — as a database. No connections, no servers: the files are
+the database.
 
 ## Install
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]"        # core + test tools
+pip install -e ".[parquet]"    # pyarrow, for parquet files
+pip install -e ".[sql]"        # duckdb, for SQL across files
 ```
 
-## Usage (target UX)
+## Usage
 
 ```python
-from ds_audit_toolkit import run_audit
+import localdb
 
-report = run_audit("config/client_geo_join.yaml")
-report.save("reports/client_geo_join.html")
+df = localdb.read("data/clients.csv")            # one file, format by extension
+
+db = localdb.connect("data/downloads/")          # a folder is the database
+db.list_tables()                                  # by file stem
+df = db.get_table("clients")                      # any registered format
+df = db.query("SELECT * FROM clients JOIN refs USING (id)")  # needs localdb[sql]
+
+db = localdb.connect("data/warehouse.sqlite")    # sqlite works the same way
 ```
 
-Pipeline configs are YAML (see `config/client_geo_join.yaml`): sources, join
-keys/types, match threshold, and optional target/time columns for feature
-flagging.
+Datasets can be declared once in a YAML catalog:
 
-## Layout
+```yaml
+# catalog.yaml
+clients: data/clients.csv
+fsa_lookup: ${DOWNLOAD_DIR}/fsa_lookup.parquet
+```
 
-| Module | Responsibility |
-|---|---|
-| `connectors/` | Pull from DBs/files into a common dataframe interface (SQLAlchemy) |
-| `standardize/` | Key formatting & type coercion registry (`postal_code`, `fsa`, `client_id`, ...) |
-| `join_audit/` | Match report (exact via datacompy) + fuzzy fallback + confidence scores |
-| `schema_validate/` | Pandera rule enforcement; auto-drafted schemas checked into `config/schemas/` |
-| `feature_flags/` | Leakage (adversarial, target-correlation, temporal) / non-predictive detection |
-| `reporting/` | One HTML/markdown report per pipeline run |
-| `pipeline.py` | `run_audit(config_path)` — orchestrates the above end-to-end |
+```python
+tables = localdb.load_catalog("catalog.yaml")
+df = localdb.read(tables["fsa_lookup"])
+```
 
-## Status
+Custom file types register one reader:
 
-Phase 0 — repo scaffold; modules are stubbed. Milestones tracked in `PLAN.md`.
+```python
+localdb.register_reader("myext", my_loader_fn)
+```
 
 ## Development
 
 ```bash
-pytest        # run tests
-ruff check src tests
+.venv/Scripts/python -m pytest       # Windows venv; plain `pytest` elsewhere
+.venv/Scripts/python -m ruff check src tests
 ```
+
+See `PLAN.md` for scope and `TODO.md` for what's next.
