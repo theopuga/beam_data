@@ -1,4 +1,4 @@
-"""A downloaded data folder (or SQLite file) treated as the database itself."""
+"""A set of already-downloaded tables: a folder of data files, or a SQLite file."""
 
 import sqlite3
 from pathlib import Path
@@ -12,8 +12,8 @@ _SQLITE_SUFFIXES = {".sqlite", ".db", ".sqlite3"}
 _SQL_EXTENSIONS = {".csv", ".tsv", ".parquet", ".pq", ".json"}
 
 
-class Database:
-    """A folder of data files, or a single SQLite file, queried by table name.
+class Tables:
+    """Connect to a set of tables: a folder of data files, or a SQLite file.
 
     Table names are file stems; format is detected per file. Ambiguous stems
     (clients.csv and clients.parquet in one folder) raise, rather than guess.
@@ -26,11 +26,11 @@ class Database:
         self._is_sqlite = self.path.is_file() and self.path.suffix.lower() in _SQLITE_SUFFIXES
         if not self._is_sqlite and not self.path.is_dir():
             raise NotADirectoryError(
-                f"{self.path} is neither a data folder nor a SQLite file"
+                f"{self.path} is neither a folder of tables nor a SQLite file"
             )
 
-    def list_tables(self) -> list[str]:
-        """All table names discoverable in this database."""
+    def names(self) -> list[str]:
+        """All table names available here."""
         if self._is_sqlite:
             with sqlite3.connect(self.path) as conn:
                 rows = conn.execute(
@@ -40,7 +40,7 @@ class Database:
             return sorted(name for (name,) in rows)
         return sorted({p.stem for p in self.path.iterdir() if p.suffix.lower() in _SQL_EXTENSIONS})
 
-    def get_table(self, name: str, **kwargs: Any) -> pd.DataFrame:
+    def get(self, name: str, **kwargs: Any) -> pd.DataFrame:
         """Read one table (file stem, or sqlite table name) into a DataFrame."""
         if self._is_sqlite:
             return read(self.path, table=name, **kwargs)
@@ -51,7 +51,7 @@ class Database:
             and p.suffix.lower().lstrip(".") in supported_extensions()
         )
         if not matches:
-            available = ", ".join(self.list_tables()) or "(none)"
+            available = ", ".join(self.names()) or "(none)"
             raise KeyError(f"table {name!r} not found in {self.path}; available: {available}")
         if len(matches) > 1:
             names = ", ".join(p.name for p in matches)
@@ -59,10 +59,10 @@ class Database:
         return read(matches[0], **kwargs)
 
     def query(self, sql: str) -> pd.DataFrame:
-        """Run SQL over the folder's tables (requires the `sql` extra: duckdb).
+        """Run SQL joining the tables (requires the `sql` extra: duckdb).
 
         Files become views named by their stem (csv/parquet/json supported).
-        SQLite databases are queried directly via the stdlib sqlite3.
+        SQLite files are queried directly via the stdlib sqlite3.
         """
         if self._is_sqlite:
             with sqlite3.connect(self.path) as conn:
@@ -71,11 +71,11 @@ class Database:
             import duckdb
         except ImportError as exc:
             raise ImportError(
-                "SQL over file folders requires the `sql` extra: pip install localdb[sql]"
+                "SQL across tables requires the `sql` extra: pip install localdb[sql]"
             ) from exc
         con = duckdb.connect()
         try:
-            for stem in self.list_tables():
+            for stem in self.names():
                 for p in self._files_with_stem(stem):
                     ext = p.suffix.lower().lstrip(".")
                     fn = {"csv": "read_csv_auto", "tsv": "read_csv_auto", "parquet": "read_parquet", "pq": "read_parquet", "json": "read_json_auto"}.get(ext)
@@ -97,4 +97,4 @@ class Database:
 
     def __repr__(self) -> str:
         kind = "sqlite" if self._is_sqlite else "folder"
-        return f"Database({kind}: {self.path}, tables={self.list_tables()})"
+        return f"Tables({kind}: {self.path}, tables={self.names()})"

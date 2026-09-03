@@ -1,11 +1,11 @@
-"""Tests for Database: folder-as-db, sqlite files, and duckdb queries."""
+"""Tests for Tables: folder of files, sqlite files, and duckdb queries."""
 
 import sqlite3
 
 import pandas as pd
 import pytest
 
-from localdb import Database, read
+from localdb import Tables, read
 
 
 @pytest.fixture()
@@ -23,65 +23,65 @@ def sqlite_file(tmp_path):
     return p
 
 
-def test_folder_lists_tables(folder):
-    assert Database(folder).list_tables() == ["clients", "refs"]
+def test_folder_names(folder):
+    assert Tables(folder).names() == ["clients", "refs"]
 
 
-def test_folder_get_table_by_stem(folder):
-    assert Database(folder).get_table("clients")["name"].tolist() == ["a", "b"]
+def test_folder_get_by_stem(folder):
+    assert Tables(folder).get("clients")["name"].tolist() == ["a", "b"]
 
 
-def test_folder_get_table_missing_raises(folder):
+def test_folder_get_missing_raises(folder):
     with pytest.raises(KeyError, match="not found"):
-        Database(folder).get_table("nope")
+        Tables(folder).get("nope")
 
 
 def test_folder_ambiguous_stem_raises(folder):
     pd.DataFrame({"a": [1]}).to_parquet(folder / "clients.parquet")
     with pytest.raises(ValueError, match="ambiguous"):
-        Database(folder).get_table("clients")
+        Tables(folder).get("clients")
 
 
-def test_folder_get_table_passthrough_kwargs(folder):
-    out = Database(folder).get_table("clients", dtype={"id": "int64"})
+def test_folder_get_passthrough_kwargs(folder):
+    out = Tables(folder).get("clients", dtype={"id": "int64"})
     assert out["id"].tolist() == [1, 2]
 
 
 def test_missing_path_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        Database(tmp_path / "nope")
+        Tables(tmp_path / "nope")
 
 
 def test_file_that_is_not_sqlite_raises(tmp_path):
     p = tmp_path / "t.csv"
     p.write_text("a\n1\n", encoding="utf-8")
     with pytest.raises(NotADirectoryError):
-        Database(p)
+        Tables(p)
 
 
-def test_sqlite_lists_tables(sqlite_file):
-    assert Database(sqlite_file).list_tables() == ["trades"]
+def test_sqlite_names(sqlite_file):
+    assert Tables(sqlite_file).names() == ["trades"]
 
 
-def test_sqlite_get_table(sqlite_file):
-    assert Database(sqlite_file).get_table("trades")["amt"].tolist() == [10.0, 20.0]
+def test_sqlite_get(sqlite_file):
+    assert Tables(sqlite_file).get("trades")["amt"].tolist() == [10.0, 20.0]
 
 
 def test_sqlite_query(sqlite_file):
-    out = Database(sqlite_file).query("SELECT id FROM trades WHERE id = 2")
+    out = Tables(sqlite_file).query("SELECT id FROM trades WHERE id = 2")
     assert out["id"].tolist() == [2]
 
 
 def test_folder_query_via_duckdb(folder):
     pytest.importorskip("duckdb")
-    out = Database(folder).query(
+    out = Tables(folder).query(
         "SELECT c.name FROM clients c JOIN refs r USING (id) ORDER BY c.name"
     )
     assert out["name"].tolist() == ["a"]
 
 
-def test_folder_repr(folder):
-    assert "tables=" in repr(Database(folder))
+def test_repr(folder):
+    assert "tables=" in repr(Tables(folder))
 
 
 def test_read_still_exported(tmp_path):

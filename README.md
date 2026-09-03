@@ -1,8 +1,8 @@
 # localdb
 
-Treat a folder of already-downloaded data files — CSV, Parquet, JSON, Excel,
-or a SQLite file — as a database. No connections, no servers: the files are
-the database.
+Connect to tables you already downloaded. A folder of data files — CSV,
+Parquet, JSON, Excel — or a SQLite file is a set of tables you can open by
+name and join with SQL. No connections, no servers: the files are the tables.
 
 ## Install
 
@@ -19,12 +19,12 @@ import localdb
 
 df = localdb.read("data/clients.csv")            # one file, format by extension
 
-db = localdb.connect("data/downloads/")          # a folder is the database
-db.list_tables()                                  # by file stem
-df = db.get_table("clients")                      # any registered format
-df = db.query("SELECT * FROM clients JOIN refs USING (id)")  # needs localdb[sql]
+ts = localdb.tables("data/downloads/")           # connect to the folder's tables
+ts.names()                                       # by file stem
+df = ts.get("clients")                           # any registered format
+df = ts.query("SELECT * FROM clients JOIN refs USING (id)")  # needs localdb[sql]
 
-db = localdb.connect("data/warehouse.sqlite")    # sqlite works the same way
+ts = localdb.tables("data/warehouse.sqlite")     # sqlite works the same way
 ```
 
 Datasets can be declared once in a YAML catalog:
