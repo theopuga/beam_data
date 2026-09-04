@@ -75,6 +75,36 @@ def _read_sqlite(path: Path, table: str | None = None, **kwargs: Any) -> pd.Data
         return pd.read_sql_query(f'SELECT * FROM "{table}"', conn, **kwargs)
 
 
+def _read_zip(path: Path, member: str | None = None, **kwargs: Any) -> pd.DataFrame:
+    """Read a tabular file stored inside a .zip (csv/tsv members).
+
+    Single-member zips read directly; multi-member zips need member=<name>.
+    kwargs pass through to pd.read_csv.
+    """
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(path) as z:
+        members = [n for n in z.namelist() if not n.endswith("/")]
+        if member is None:
+            if len(members) != 1:
+                preview = ", ".join(members[:5])
+                raise ValueError(
+                    f"{path} contains {len(members)} members; pass member= one of: {preview}"
+                )
+            member = members[0]
+        elif member not in members:
+            raise KeyError(f"member {member!r} not in {path}; members: {members}")
+        data = z.read(member)
+    inner_ext = member.rsplit(".", 1)[-1].lower()
+    if inner_ext == "csv":
+        return pd.read_csv(io.BytesIO(data), **kwargs)
+    if inner_ext in ("tsv", "txt"):
+        kwargs.setdefault("sep", "\t")
+        return pd.read_csv(io.BytesIO(data), **kwargs)
+    raise ValueError(f"zip member {member!r} is .{inner_ext}; only csv/tsv/txt supported")
+
+
 register_reader("csv", _read_csv)
 register_reader("tsv", _read_tsv)
 register_reader("parquet", _read_parquet)
@@ -84,3 +114,4 @@ register_reader("xls", _read_excel)
 register_reader("json", _read_json)
 register_reader("sqlite", _read_sqlite)
 register_reader("db", _read_sqlite)
+register_reader("zip", _read_zip)

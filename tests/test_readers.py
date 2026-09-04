@@ -67,3 +67,43 @@ def test_custom_reader_used_by_read(tmp_path):
     p = tmp_path / "t.weird"
     p.write_text("anything", encoding="utf-8")
     assert read(p)["v"].iloc[0] == 42
+
+
+def test_read_zip_single_member(tmp_path):
+    import zipfile
+
+    p = tmp_path / "t.zip"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("inner.csv", "a,b\n1,x\n2,y\n")
+    assert read(p)["b"].tolist() == ["x", "y"]
+
+
+def test_read_zip_tsv_member(tmp_path):
+    import zipfile
+
+    p = tmp_path / "t.zip"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("CA.txt", "a\tb\n1\tx\n")
+    assert read(p)["b"].iloc[0] == "x"
+
+
+def test_read_zip_multi_member_needs_member_arg(tmp_path):
+    import zipfile
+
+    p = tmp_path / "t.zip"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("one.csv", "a\n1\n")
+        z.writestr("two.csv", "a\n2\n")
+    with pytest.raises(ValueError, match="pass member="):
+        read(p)
+    assert read(p, member="two.csv")["a"].iloc[0] == 2
+
+
+def test_read_zip_missing_member_raises(tmp_path):
+    import zipfile
+
+    p = tmp_path / "t.zip"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("one.csv", "a\n1\n")
+    with pytest.raises(KeyError, match="not in"):
+        read(p, member="nope.csv")

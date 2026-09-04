@@ -1,7 +1,29 @@
 # TODO — localdb
 
-Package is functional end-to-end and piloted on real data (60 tests,
+Package is functional end-to-end and piloted on real data (71 tests,
 including regression tests against test_data/ that skip in CI).
+
+## Pilot round 3 — done (2026-09-04, messy CSV + Companies House zips + HF parquet)
+
+- [x] `messy_quebec_extract.csv`: kwargs passthrough handles latin-1,
+      semicolons, preamble rows, French decimals; `client_id` cleaner
+      preserves house formats (`C-00042`); utf-8 failure is loud, not silent
+- [x] Built-in **zip reader** (single-member csv/tsv/txt, `member=` for
+      multi-member); Companies House 70MB zip reads targeted columns
+- [x] Memory question settled pragmatically: 850k rows/2.9s targeted read;
+      5.69M-row full scan of the 2.8GB zip in 18.2s via `chunksize=` passthrough
+- [x] Real **parquet** via HuggingFace datasets-server (day shards); SQL
+      UNION ALL across shards works; parquet dtypes preserved (datetime64
+      tz-aware, int32)
+
+### Follow-ups from round 3
+
+- [ ] Companies House headers have alternating leading spaces
+      (` CompanyNumber`) — consider a `clean_headers=True` read option
+- [ ] `montant`-style mixed decimal formats stay object dtype — advisory
+      only, but a validation helper could flag "column should be numeric"
+- [ ] Zip members are not SQL-queryable via duckdb (skipped with warning) —
+      acceptable; note in docs
 
 ## Pilot — done (2026-09-04, licence/registration extracts + GeoNames CA)
 
@@ -37,19 +59,15 @@ including regression tests against test_data/ that skip in CI).
 
 - [ ] Files with real **client id** house formats (prefixes, leading zeros,
       check digits) to exercise the `client_id` cleaner
-- [ ] A genuinely large file (100MB+) to settle the memory question —
-      chunking/caching is the first feature if it hurts
-- [ ] A real `.parquet` extract (nested types, zstd, partitioned folders
-      sometimes differ from synthetic tests)
-- [ ] Deliberately messy data: `latin-1` encoding, junk header rows, mixed
-      date formats — all still first encounters
+- [ ] Deliberately duplicate-laden data with *low* match rates — the trigger
+      for deciding whether fuzzy fallback is worth building
 
 ## Later
 
 - [ ] Fuzzy key fallback for links with low match rates (recordlinkage or
       Splink) — only if exact matching proves insufficient
-- [ ] Chunking/sampling for files too big for memory
 - [ ] Optional: caching layer (parquet cache of slow-to-parse files)
 - [ ] Column pruning pushdown for parquet (`ts.get(name, columns=[...])`)
 - [ ] Publish internally (or to PyPI) once the API feels right
+
 

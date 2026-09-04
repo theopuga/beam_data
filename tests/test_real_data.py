@@ -14,6 +14,9 @@ from localdb import Tables
 TEST_DATA = Path(__file__).parents[1] / "test_data"
 LICENCE_CSV = TEST_DATA / "select_licence_and_registration_business_17-18.csv"
 CHINOOK = TEST_DATA / "chinook.sqlite"
+QUEBEC = TEST_DATA / "messy_quebec_extract.csv"
+COMPANIES_HOUSE = TEST_DATA / "BasicCompanyData-2026-09-01-part1_7.zip"
+GITHUB = TEST_DATA / "github_comments"
 
 pytestmark = pytest.mark.skipif(not TEST_DATA.exists(), reason="test_data/ not present")
 
@@ -90,3 +93,73 @@ def pd_read_geo(buf):
     import pandas as pd
 
     return pd.read_csv(buf, sep="\t", header=None, usecols=[1], names=["fsa"])
+
+
+@pytest.mark.skipif(not QUEBEC.exists(), reason="messy_quebec_extract.csv not present")
+class TestMessyQuebec:
+    def test_kwargs_passthrough_reads_messy_file(self):
+        ts = Tables(TEST_DATA)
+        df = ts.get(
+            "messy_quebec_extract", sep=";", encoding="latin-1", skiprows=2,
+            decimal=",", thousands=" ",
+        )
+        assert df["nom"].iloc[0] == "Frédéric Côté"
+        assert len(df) == 5
+
+    def test_default_utf8_fails_loudly(self):
+        with pytest.raises(UnicodeDecodeError):
+            Tables(TEST_DATA).get("messy_quebec_extract", sep=";", skiprows=2)
+
+    def test_client_id_house_format_survives(self):
+        from localdb.keys import standardize
+
+        df = Tables(TEST_DATA).get(
+            "messy_quebec_extract", sep=";", encoding="latin-1", skiprows=2
+        )
+        standardize(df, "client_id", "client_id")
+        assert df["client_id"].tolist() == [f"C-0004{i}" for i in range(2, 7)]
+
+
+@pytest.mark.skipif(not COMPANIES_HOUSE.exists(), reason="companies house zip not present")
+class TestCompaniesHouse:
+    def test_zip_targeted_read(self):
+        ts = Tables(TEST_DATA)
+        df = ts.get(
+            "BasicCompanyData-2026-09-01-part1_7",
+            usecols=[" CompanyNumber", "CompanyName", "RegAddress.PostCode"],
+        )
+        assert len(df) == 849_999
+        assert df["RegAddress.PostCode"].notna().sum() > 800_000
+
+    def test_postcodes_need_stripping_for_linking(self):
+        from localdb.keys import standardize
+
+        ts = Tables(TEST_DATA)
+        df = ts.get(
+            "BasicCompanyData-2026-09-01-part1_7",
+            usecols=["RegAddress.PostCode"],
+        ).dropna()
+        standardize(df, "RegAddress.PostCode", "postal_code")
+        assert df["RegAddress.PostCode"].str.contains(" ").sum() == 0
+
+
+@pytest.mark.skipif(not GITHUB.exists() or not any(GITHUB.iterdir()),
+                    reason="github parquet shards not present")
+class TestGithubParquet:
+    def test_shards_discovered_and_readable(self):
+        ts = Tables(GITHUB)
+        assert len(ts.names()) >= 7
+        assert "2011-02-12" in ts.names()
+
+    def test_cross_shard_sql_aggregation(self):
+        ts = Tables(GITHUB)
+        views = ts.names()
+        union = " UNION ALL ".join(
+            f"SELECT '{v}' AS day, actor_login FROM \"{v}\"" for v in views
+        )
+        out = ts.query(
+            f"SELECT day, COUNT(*) AS comments FROM ({union}) "
+            "GROUP BY day ORDER BY day"
+        )
+        assert out["comments"].sum() == 3738
+        assert out["comments"].iloc[0] == 410
