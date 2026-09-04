@@ -17,6 +17,9 @@ CHINOOK = TEST_DATA / "chinook.sqlite"
 QUEBEC = TEST_DATA / "messy_quebec_extract.csv"
 COMPANIES_HOUSE = TEST_DATA / "BasicCompanyData-2026-09-01-part1_7.zip"
 GITHUB = TEST_DATA / "github_comments"
+FEBRL_A = TEST_DATA / "febrl4_A.csv"
+FEBRL_B = TEST_DATA / "febrl4_B.csv"
+BARCODES = TEST_DATA / "barcode_client_ids.csv"
 
 pytestmark = pytest.mark.skipif(not TEST_DATA.exists(), reason="test_data/ not present")
 
@@ -163,3 +166,55 @@ class TestGithubParquet:
         )
         assert out["comments"].sum() == 3738
         assert out["comments"].iloc[0] == 410
+
+
+@pytest.mark.skipif(not (BARCODES.exists() and FEBRL_A.exists() and FEBRL_B.exists()),
+                    reason="barcode/febrl files not present")
+class TestIdentifiersAndFuzzyTrigger:
+    def test_barcode_leading_zeros_need_string_dtype(self):
+        import pandas as pd
+
+        df = pd.read_csv(BARCODES, dtype={"client_id": "string"})
+        assert df["client_id"].iloc[0] == "0600001410008"
+        naive = pd.read_csv(BARCODES)
+        assert naive["client_id"].iloc[0] == 600001410008
+
+    def test_ean13_check_digit_kind(self):
+        import pandas as pd
+
+        from localdb import register_kind, standardize
+
+        def ean13(col):
+            def ok(s):
+                if s is None or len(s) != 13 or not s.isdigit():
+                    return False
+                body, check = s[:12], int(s[12])
+                total = sum(int(d) * (3 if i % 2 else 1) for i, d in enumerate(body))
+                return (10 - total % 10) % 10 == check
+
+            return col.map(ok)
+
+        register_kind("ean13_valid", ean13)
+        df = pd.read_csv(BARCODES, dtype={"client_id": "string"})
+        standardize(df, "client_id", "ean13_valid")
+        assert df["client_id"].sum() == 10
+
+    def test_febrl_ground_truth_and_exact_ceiling(self):
+        import pandas as pd
+
+        a = pd.read_csv(FEBRL_A)
+        b = pd.read_csv(FEBRL_B)
+        a["stem"] = a["rec_id"].str.extract(r"rec-(\d+)-org")
+        b["stem"] = b["rec_id"].str.extract(r"rec-(\d+)-dup")
+        true_pairs = len(set(a["stem"].dropna()) & set(b["stem"].dropna()))
+        assert true_pairs == 5000
+
+        ka = a[["postcode", "surname", "date_of_birth"]].fillna("").astype(str).agg(
+            "|".join, axis=1)
+        kb = b[["postcode", "surname", "date_of_birth"]].fillna("").astype(str).agg(
+            "|".join, axis=1)
+        coverage = len(set(ka) & set(kb)) / len(set(ka))
+        assert coverage < 0.6
+        assert 0 == len(set(a.drop(columns="rec_id").fillna("").astype(str).agg(
+            "|".join, axis=1)) & set(b.drop(columns="rec_id").fillna("").astype(str).agg(
+                "|".join, axis=1)))

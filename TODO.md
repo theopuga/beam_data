@@ -1,7 +1,27 @@
 # TODO — localdb
 
-Package is functional end-to-end and piloted on real data (71 tests,
+Package is functional end-to-end and piloted on real data (74 tests,
 including regression tests against test_data/ that skip in CI).
+
+## Pilot round 4 — done (2026-09-04, barcodes + FEBRL record-linkage benchmark)
+
+- [x] `barcode_client_ids.csv`: integer dtype inference **strips leading
+      zeros** from barcode client ids — ids must be read with
+      `dtype={'client_id': 'string'}`; documented in tests
+- [x] `register_kind` extensibility proven: an `ean13_valid` kind (check-digit
+      validation) correctly flags the corrupted row
+- [x] `febrl4_A/B.csv` (the standard record-linkage benchmark): ground truth
+      extracted — 5000 true pairs via `rec_id` stem; exact full-row overlap 0;
+      exact-link ceiling collapses 0.963 (postcode) → 0.512 (postcode+surname
+      +dob) as corruption hits more fields
+
+### Decision unlocked by round 4
+
+- [ ] **Fuzzy fallback is now justified** — exact matching provably
+      insufficient for person-level linkage. Proposal: optional `fuzzy`
+      extra (recordlinkage), `link_tables(..., fuzzy=True)`; acceptance test
+      = beat 0.512 exact ceiling on FEBRL composite keys with measurable
+      precision/recall against the 5000-pair ground truth
 
 ## Pilot round 3 — done (2026-09-04, messy CSV + Companies House zips + HF parquet)
 
@@ -57,15 +77,12 @@ including regression tests against test_data/ that skip in CI).
 
 ## Next — data still to find
 
-- [ ] Files with real **client id** house formats (prefixes, leading zeros,
-      check digits) to exercise the `client_id` cleaner
-- [ ] Deliberately duplicate-laden data with *low* match rates — the trigger
-      for deciding whether fuzzy fallback is worth building
+Both original data blockers are resolved (client-id formats: barcodes, round
+4; low-match-rate data: FEBRL, round 4). Remaining data needs are
+use-case-driven only.
 
 ## Later
 
-- [ ] Fuzzy key fallback for links with low match rates (recordlinkage or
-      Splink) — only if exact matching proves insufficient
 - [ ] Optional: caching layer (parquet cache of slow-to-parse files)
 - [ ] Column pruning pushdown for parquet (`ts.get(name, columns=[...])`)
 - [ ] Publish internally (or to PyPI) once the API feels right
