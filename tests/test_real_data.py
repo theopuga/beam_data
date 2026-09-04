@@ -218,3 +218,32 @@ class TestIdentifiersAndFuzzyTrigger:
         assert 0 == len(set(a.drop(columns="rec_id").fillna("").astype(str).agg(
             "|".join, axis=1)) & set(b.drop(columns="rec_id").fillna("").astype(str).agg(
                 "|".join, axis=1)))
+
+    def test_fuzzy_beats_exact_ceiling_on_febrl(self):
+        import pandas as pd
+
+        from localdb import fuzzy_link_tables
+
+        a = pd.read_csv(FEBRL_A)
+        b = pd.read_csv(FEBRL_B)
+        a["stem"] = a["rec_id"].str.extract(r"rec-(\d+)-org")
+        b["stem"] = b["rec_id"].str.extract(r"rec-(\d+)-dup")
+
+        result = fuzzy_link_tables(
+            a, b,
+            on=["postcode", "given_name", "surname", "date_of_birth"],
+            block_on=["postcode", "surname"],
+            weights={"postcode": 1.0, "given_name": 2.0, "surname": 2.0,
+                     "date_of_birth": 1.0},
+            threshold=0.75,
+        )
+        best = result.best_matches()
+        best = best.merge(a["stem"].rename("left_stem"),
+                          left_on="left_index", right_index=True)
+        best["right_stem"] = best["right_index"].map(
+            pd.Series(b["stem"].to_numpy(), index=b.index))
+        correct = int((best["left_stem"] == best["right_stem"]).sum())
+        recall = correct / 5000
+        precision = correct / len(best)
+        assert recall > 0.78, f"recall {recall:.3f} below acceptance bar"
+        assert precision > 0.94, f"precision {precision:.3f} below acceptance bar"

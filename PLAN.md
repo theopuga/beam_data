@@ -23,6 +23,9 @@ In scope:
 - `link()` — connect two tables on identifiers (FSA, client id, postal
   code, ...): standardize keys, report duplicates/nulls/dtype mismatches,
   join, and report match coverage with unmatched-key samples
+- `fuzzy_link_tables()` — scored fuzzy linking for corrupted keys:
+  multi-column weighted similarity, union blocking, threshold matching;
+  validated on the FEBRL4 benchmark
 - Extensible reader registry (`register_reader`) so "other types of data
   files" are one registration away
 - Optional YAML catalog mapping dataset names to paths, with `${VAR}` env

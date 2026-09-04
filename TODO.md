@@ -15,13 +15,15 @@ including regression tests against test_data/ that skip in CI).
       exact-link ceiling collapses 0.963 (postcode) → 0.512 (postcode+surname
       +dob) as corruption hits more fields
 
-### Decision unlocked by round 4
+### Decision unlocked by round 4 — RESOLVED
 
-- [ ] **Fuzzy fallback is now justified** — exact matching provably
-      insufficient for person-level linkage. Proposal: optional `fuzzy`
-      extra (recordlinkage), `link_tables(..., fuzzy=True)`; acceptance test
-      = beat 0.512 exact ceiling on FEBRL composite keys with measurable
-      precision/recall against the 5000-pair ground truth
+- [x] **Fuzzy fallback built** — `localdb.fuzzy_link_tables` (stdlib difflib,
+      zero new dependencies): multi-column weighted similarity scoring,
+      union blocking (`block_on` list), threshold classification,
+      `best_matches()` per left row. FEBRL4 acceptance: **recall 0.807 /
+      precision 0.950** at threshold 0.75 vs the 0.512 exact-link ceiling,
+      validated against 5000 known pairs (regression-tested). Scaling beyond
+      ~100k candidate pairs (recordlinkage/Splink) remains a Later item.
 
 ## Pilot round 3 — done (2026-09-04, messy CSV + Companies House zips + HF parquet)
 
