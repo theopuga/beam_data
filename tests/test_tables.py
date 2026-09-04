@@ -87,6 +87,13 @@ def test_folder_query_via_duckdb(folder):
     assert out["name"].tolist() == ["a"]
 
 
+def test_folder_query_quoted_stems(tmp_path):
+    pytest.importorskip("duckdb")
+    pd.DataFrame({"id": [1, 2], "v": ["a", "b"]}).to_csv(tmp_path / "17-18 data.csv", index=False)
+    out = Tables(tmp_path).query('SELECT id FROM "17-18 data" WHERE id = 2')
+    assert out["id"].tolist() == [2]
+
+
 def test_repr(folder):
     assert "tables=" in repr(Tables(folder))
 

@@ -88,6 +88,6 @@ df = localdb.read(tables["fsa_lookup"])
 
 - Whole files load into memory; no chunking/sampling yet
 - `get_table` prefers nothing on ambiguous stems — it raises; rename files
-- duckdb views only cover csv/tsv/parquet/json (excel files still readable
-  via `get_table`, just not SQL-joinable)
+- duckdb views cover csv/tsv/parquet/json/xlsx (xlsx reads all columns as
+  varchar); other formats are skipped with a warning
 - Reader set is fixed at import; per-project readers register at runtime

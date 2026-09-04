@@ -1,6 +1,7 @@
 """A set of already-downloaded tables: a folder of data files, or a SQLite file."""
 
 import sqlite3
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -62,8 +63,10 @@ class Tables:
     def query(self, sql: str) -> pd.DataFrame:
         """Run SQL joining the tables (requires the `sql` extra: duckdb).
 
-        Files become views named by their stem (csv/parquet/json supported).
-        SQLite files are queried directly via the stdlib sqlite3.
+        Files become views named by their quoted stem (csv/tsv/parquet/json/
+        xlsx supported; xlsx reads all columns as varchar). SQLite files are
+        queried directly via the stdlib sqlite3. Tables whose format duckdb
+        cannot read are skipped with a warning.
         """
         if self._is_sqlite:
             with sqlite3.connect(self.path) as conn:
@@ -76,16 +79,32 @@ class Tables:
             ) from exc
         con = duckdb.connect()
         try:
+            skipped = []
             for stem in self.names():
                 for p in self._files_with_stem(stem):
                     ext = p.suffix.lower().lstrip(".")
-                    fn = {"csv": "read_csv_auto", "tsv": "read_csv_auto", "parquet": "read_parquet", "pq": "read_parquet", "json": "read_json_auto"}.get(ext)
+                    fn = {
+                        "csv": "read_csv_auto",
+                        "tsv": "read_csv_auto",
+                        "parquet": "read_parquet",
+                        "pq": "read_parquet",
+                        "json": "read_json_auto",
+                        "xlsx": "read_xlsx",
+                        "xls": "read_xlsx",
+                    }.get(ext)
                     if fn is None:
-                        continue
+                        skipped.append(stem)
+                        break
+                    options = ", header = true, all_varchar = true" if fn == "read_xlsx" else ""
                     con.execute(
-                        f"CREATE VIEW {stem} AS SELECT * FROM {fn}('{p.as_posix()}')"
+                        f'CREATE VIEW "{stem}" AS '
+                        f"SELECT * FROM {fn}('{p.as_posix()}'{options})"
                     )
                     break
+            if skipped:
+                warnings.warn(
+                    f"tables not SQL-queryable and skipped: {', '.join(sorted(set(skipped)))}"
+                )
             return con.execute(sql).df()
         finally:
             con.close()
