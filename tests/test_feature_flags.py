@@ -1,5 +1,7 @@
 """Tests for the feature audit: each check, the entry point, the report."""
 
+import sys
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -32,6 +34,16 @@ def test_flag_constant_features():
     flags = {f["feature"]: f["reason"] for f in flag_constant_features(frame())}
     assert "country" in flags  # 1 distinct value
     assert "tenure_months" not in flags and "monthly_spend" not in flags
+
+
+def test_flag_near_zero_variance():
+    df = pd.DataFrame({
+        "wiggle": [1.0, 1.0, 1.0, 1.0 + 1e-13],  # 2 distinct values, std ~5e-14
+        "normal": [1.0, 2.0, 3.0, 4.0],
+    })
+    flags = {f["feature"]: f["reason"] for f in flag_constant_features(df)}
+    assert "wiggle" in flags and "std" in flags["wiggle"]
+    assert "normal" not in flags
 
 
 def test_flag_duplicate_features():
@@ -75,6 +87,17 @@ def test_flag_temporal_leakage():
                                  {"credit_score": "credit_score_pulled_at"}) == []
 
 
+def test_temporal_leakage_validates_and_skips_all_nat():
+    df = frame().assign(
+        signup_date=pd.date_range("2026-01-01", periods=200, freq="D"),
+        credit_score=rng_scores(),
+        score_ts=pd.NaT,  # availability unknown on every row -> nothing usable
+    )
+    with pytest.raises(KeyError, match="missing column"):
+        flag_temporal_leakage(df, "signup_date", {"credit_score": "nope_ts"})
+    assert flag_temporal_leakage(df, "signup_date", {"credit_score": "score_ts"}) == []
+
+
 def rng_scores():
     return np.random.default_rng(3).normal(650, 50, 200)
 
@@ -91,6 +114,25 @@ def test_flag_adversarial_leakage():
 
     iid = frame().assign(source_batch=np.random.default_rng(5).normal(size=200))
     assert flag_adversarial_leakage(iid, mask, n_estimators=30, auc_margin=0.3) == []
+
+
+def test_sklearn_missing_degrades(monkeypatch):
+    monkeypatch.setitem(sys.modules, "sklearn.metrics", None)
+    df = frame().assign(
+        churn=lambda d: (d["monthly_spend"] > d["monthly_spend"].median()).astype(int))
+    df["churn_copy"] = df["churn"].astype(float)
+    flags = {f["feature"] for f in flag_target_correlation(df, "churn")}
+    assert "churn_copy" in flags  # numeric branch unaffected
+    df2 = frame().assign(churned=lambda d: d["plan"])
+    assert flag_target_correlation(df2, "churned") == []  # categorical branch skipped
+
+
+def test_xgboost_missing_degrades(monkeypatch):
+    pytest.importorskip("xgboost")
+    monkeypatch.setitem(sys.modules, "xgboost", None)
+    df = frame()
+    mask = pd.Series([True] * 50 + [False] * 150)
+    assert flag_adversarial_leakage(df, mask) == []
 
 
 def test_audit_features_progressive():
