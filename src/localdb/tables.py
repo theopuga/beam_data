@@ -19,6 +19,8 @@ class Tables:
 
     Table names are file stems; format is detected per file. Ambiguous stems
     (clients.csv and clients.parquet in one folder) raise, rather than guess.
+    A .sqlite file inside a folder is not a table — open it as its own
+    Tables (it is silently absent from the folder's names()).
     """
 
     def __init__(self, path: str | Path) -> None:
