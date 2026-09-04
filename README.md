@@ -143,6 +143,5 @@ combination is a candidate.
 ```bash
 .venv/Scripts/python -m pytest       # Windows venv; plain `pytest` elsewhere
 .venv/Scripts/python -m ruff check src tests
+.venv/Scripts/python -m pytest --cov # with coverage, needs localdb[dev] (pytest-cov)
 ```
-
-See `PLAN.md` for scope, `TODO.md` for status and next steps.

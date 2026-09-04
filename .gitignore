@@ -48,6 +48,10 @@ reports/
 test_data/
 *.log
 
+# Local-only planning docs
+PLAN.md
+TODO.md
+
 # Data pulled during runs (keep configs, not data)
 *.csv
 *.parquet
