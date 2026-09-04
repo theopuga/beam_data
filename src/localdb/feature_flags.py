@@ -10,8 +10,10 @@ The workflow for downloaded data feeding a model (e.g. XGBoost):
 
 Report, not auto-drop: every flag carries a score and a reason — the
 analyst decides. Optional dependencies degrade gracefully: without xgboost
-the adversarial check returns no flags; without scikit-learn the
-categorical branch of the target-correlation check returns no flags.
+the numeric branch of the adversarial check returns no flags; without
+scipy the categorical branch of the adversarial check and without
+scikit-learn the categorical branch of the target-correlation check
+return no flags.
 
 audit_features(df) runs whatever checks the arguments allow: pass just a
 frame for the non-predictive checks; add target=, time_column=/
@@ -28,6 +30,7 @@ _DEFAULT_CORR_THRESHOLD = 0.95
 _DEFAULT_LEAK_SHARE_THRESHOLD = 0.0
 _DEFAULT_ADVERSARIAL_AUC_MARGIN = 0.05
 _DEFAULT_ADVERSARIAL_IMPORTANCE_THRESHOLD = 0.05
+_DEFAULT_ADVERSARIAL_CATEGORICAL_THRESHOLD = 0.25
 _DEFAULT_CONSTANT_MAX_UNIQUE = 1
 _DEFAULT_CONSTANT_NEAR_ZERO_STD = 1e-12
 
@@ -194,50 +197,92 @@ def flag_temporal_leakage(df: pd.DataFrame, time_column: str,
     return flags
 
 
+def _bias_corrected_cramers_v(x: pd.Series, y: pd.Series, chi2_contingency) -> float:
+    """Association between a categorical feature and the train/holdout split.
+
+    Bergsma-corrected Cramér's V: the classic estimator overstates V for
+    high-cardinality features, which is exactly the bias that makes encoded
+    importances misleading — correcting for it keeps the categorical branch
+    honest.
+    """
+    table = pd.crosstab(x.fillna("__missing__"), y)
+    obs = table.to_numpy()
+    n = int(obs.sum())
+    if n < 2 or min(obs.shape) < 2:
+        return 0.0
+    chi2 = float(chi2_contingency(obs, correction=False)[0])
+    r, k = obs.shape
+    phi2_hat = max(0.0, chi2 / n - (r - 1) * (k - 1) / (n - 1))
+    r_hat = r - (r - 1) ** 2 / (n - 1)
+    k_hat = k - (k - 1) ** 2 / (n - 1)
+    denom = min(r_hat, k_hat) - 1
+    return float(np.sqrt(phi2_hat / denom)) if denom > 0 else 0.0
+
+
 def flag_adversarial_leakage(df: pd.DataFrame, holdout_mask: pd.Series,
                              exclude: set[str] | None = None,
                              auc_margin: float = _DEFAULT_ADVERSARIAL_AUC_MARGIN,
                              importance_threshold: float = _DEFAULT_ADVERSARIAL_IMPORTANCE_THRESHOLD,
+                             categorical_threshold: float = _DEFAULT_ADVERSARIAL_CATEGORICAL_THRESHOLD,
                              n_estimators: int = 100,
                              random_state: int = 0,
                              ) -> list[dict]:
     """Features that let a classifier tell train rows from holdout rows.
 
-    Trains XGBoost to predict the holdout mask from the numeric features.
-    If the out-of-sample AUC is within auc_margin of 0.5, train and holdout
-    are indistinguishable and nothing is flagged; otherwise features whose
-    gain importance share exceeds importance_threshold are flagged.
-    Without xgboost installed this returns no flags (graceful degradation).
+    Numeric features: XGBoost predicts the holdout mask; if the
+    out-of-sample AUC is within auc_margin of 0.5, train and holdout are
+    indistinguishable and nothing is flagged, otherwise features whose gain
+    importance share exceeds importance_threshold are flagged (without
+    xgboost this branch returns nothing).
+
+    Categorical features are never encoded into the model (encoded
+    importances are misleading for high-cardinality columns); each one is
+    scored directly against the split with a bias-corrected Cramér's V and
+    flagged above categorical_threshold (without scipy this branch returns
+    nothing).
     """
+    exclude = (exclude or set()) | {"__holdout__"}
+    flags = []
     try:
         from xgboost import XGBClassifier
     except ImportError:
-        return []
-    from sklearn.metrics import roc_auc_score
-    from sklearn.model_selection import train_test_split
+        XGBClassifier = None
+    if XGBClassifier is not None:
+        from sklearn.metrics import roc_auc_score
+        from sklearn.model_selection import train_test_split
 
-    exclude = (exclude or set()) | {"__holdout__"}
-    features = _numeric_columns(df, exclude)
-    X = df[features].select_dtypes(include=[np.number])
-    y = holdout_mask.astype(int).to_numpy()
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=random_state, stratify=y)
-    model = XGBClassifier(
-        n_estimators=n_estimators, max_depth=3, learning_rate=0.1,
-        eval_metric="logloss", verbosity=0, random_state=random_state)
-    model.fit(X_train, y_train)
-    auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
-    if auc <= 0.5 + auc_margin:
-        return []
-    importances = pd.Series(model.get_booster().get_score(importance_type="gain"))
-    importances = importances / importances.sum()
-    flags = []
-    for feature, importance in importances.items():
-        if importance >= importance_threshold:
-            flags.append(_new_flags(
-                feature, "adversarial_leakage", importance,
-                f"train/holdout AUC {auc:.3f}; gain share {importance:.3f} "
-                f">= {importance_threshold}"))
+        features = _numeric_columns(df, exclude)
+        X = df[features].select_dtypes(include=[np.number])
+        y = holdout_mask.astype(int).to_numpy()
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.25, random_state=random_state, stratify=y)
+        model = XGBClassifier(
+            n_estimators=n_estimators, max_depth=3, learning_rate=0.1,
+            eval_metric="logloss", verbosity=0, random_state=random_state)
+        model.fit(X_train, y_train)
+        auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
+        if auc > 0.5 + auc_margin:
+            importances = pd.Series(model.get_booster().get_score(importance_type="gain"))
+            importances = importances / importances.sum()
+            for feature, importance in importances.items():
+                if importance >= importance_threshold:
+                    flags.append(_new_flags(
+                        feature, "adversarial_leakage", importance,
+                        f"train/holdout AUC {auc:.3f}; gain share {importance:.3f} "
+                        f">= {importance_threshold}"))
+    try:
+        from scipy.stats import chi2_contingency
+    except ImportError:
+        chi2_contingency = None
+    if chi2_contingency is not None:
+        label = pd.Series(np.where(holdout_mask, "holdout", "train"), index=df.index)
+        for feature in _categorical_columns(df, exclude):
+            v = _bias_corrected_cramers_v(df[feature], label, chi2_contingency)
+            if v >= categorical_threshold:
+                flags.append(_new_flags(
+                    feature, "adversarial_leakage", v,
+                    f"cramers V {v:.3f} >= {categorical_threshold} vs the "
+                    "train/holdout split"))
     return flags
 
 
@@ -249,6 +294,7 @@ def audit_features(df: pd.DataFrame, target: str | None = None,
                    max_leak_share: float = _DEFAULT_LEAK_SHARE_THRESHOLD,
                    adversarial_auc_margin: float = _DEFAULT_ADVERSARIAL_AUC_MARGIN,
                    adversarial_importance_threshold: float = _DEFAULT_ADVERSARIAL_IMPORTANCE_THRESHOLD,
+                   adversarial_categorical_threshold: float = _DEFAULT_ADVERSARIAL_CATEGORICAL_THRESHOLD,
                    max_unique: int = _DEFAULT_CONSTANT_MAX_UNIQUE,
                    near_zero_std: float = _DEFAULT_CONSTANT_NEAR_ZERO_STD,
                    ) -> FeatureAuditReport:
@@ -264,7 +310,8 @@ def audit_features(df: pd.DataFrame, target: str | None = None,
             adversarial check).
         Thresholds: corr_threshold, max_leak_share,
             adversarial_auc_margin, adversarial_importance_threshold,
-            max_unique, near_zero_std — all tunable, see the flag functions.
+            adversarial_categorical_threshold, max_unique, near_zero_std —
+            all tunable, see the flag functions.
     """
     reserved = {c for c in (target, time_column) if c}
     if available_as_of:
@@ -289,5 +336,6 @@ def audit_features(df: pd.DataFrame, target: str | None = None,
         flags += flag_adversarial_leakage(
             df, holdout_mask, exclude=reserved,
             auc_margin=adversarial_auc_margin,
-            importance_threshold=adversarial_importance_threshold)
+            importance_threshold=adversarial_importance_threshold,
+            categorical_threshold=adversarial_categorical_threshold)
     return FeatureAuditReport(flags=pd.DataFrame(flags, columns=_FLAG_COLUMNS))

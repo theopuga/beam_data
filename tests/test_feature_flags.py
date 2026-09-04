@@ -116,6 +116,39 @@ def test_flag_adversarial_leakage():
     assert flag_adversarial_leakage(iid, mask, n_estimators=30, auc_margin=0.3) == []
 
 
+def test_flag_adversarial_categorical():
+    pytest.importorskip("scipy")
+    df = frame()
+    mask = pd.Series([True] * 50 + [False] * 150)
+    df["region"] = np.where(mask, "HQ", "branch")  # categorical provenance tell
+    flags = {f["feature"]: f for f in flag_adversarial_leakage(df, mask, n_estimators=30)}
+    assert flags["region"]["check"] == "adversarial_leakage"
+    assert "cramers V" in flags["region"]["reason"]
+    assert "plan" not in flags  # unrelated category: below the threshold
+
+    masked = df.assign(region=pd.Series(["HQ", "branch"] * 100))
+    assert "region" not in {f["feature"] for f in flag_adversarial_leakage(
+        masked, mask, n_estimators=30, categorical_threshold=0.99)}
+
+
+def test_adversarial_branches_degrade_independently(monkeypatch):
+    df = frame()
+    mask = pd.Series([True] * 50 + [False] * 150)
+    df["region"] = np.where(mask, "HQ", "branch")      # categorical tell
+    df["source_batch"] = np.where(mask, 1.0, 0.0)      # numeric tell
+
+    monkeypatch.setitem(sys.modules, "xgboost", None)
+    out = {f["feature"] for f in flag_adversarial_leakage(df, mask)}
+    assert "region" in out          # categorical branch needs no xgboost
+    assert "source_batch" not in out
+    monkeypatch.undo()
+
+    monkeypatch.setitem(sys.modules, "scipy.stats", None)
+    out = {f["feature"] for f in flag_adversarial_leakage(df, mask, n_estimators=30)}
+    assert "source_batch" in out    # numeric branch needs no scipy
+    assert "region" not in out
+
+
 def test_sklearn_missing_degrades(monkeypatch):
     monkeypatch.setitem(sys.modules, "sklearn.metrics", None)
     df = frame().assign(

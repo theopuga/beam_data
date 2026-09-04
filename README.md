@@ -145,9 +145,14 @@ correlation (Pearson for numeric pairs, normalized MI for categorical),
 `time_column=`/`available_as_of=` unlocks temporal leakage, `holdout_mask=`
 unlocks adversarial validation. Every flag carries a score and a reason.
 Column names are never hardcoded — checks sort numeric vs categorical by
-dtype and run on whatever the frame has. `scikit-learn` and `xgboost` are
-optional: without them the categorical-MI and adversarial checks simply
-return no flags. Thresholds are keyword args with defaults.
+dtype and run on whatever the frame has. Adversarial validation scores
+numeric features with XGBoost gain importances; categorical features are
+never encoded into the model (encoded importances mislead for
+high-cardinality columns) and are instead scored directly against the
+train/holdout split with a bias-corrected Cramér's V. `scikit-learn`,
+`scipy`, and `xgboost` are optional: the matching branch simply returns no
+flags when its dependency is absent. Thresholds are keyword args with
+defaults.
 
 ## Validated on real data
 
@@ -171,8 +176,6 @@ return no flags. Thresholds are keyword args with defaults.
   need custom kinds
 - Fuzzy scoring suits up to ~100k candidate pairs with `block_on`; beyond
   that a recordlinkage/Splink backend is the escalation path
-- Adversarial feature check uses XGBoost on numeric features only;
-  categorical-only frames are skipped there (the MI check still applies)
 
 ## Development
 
