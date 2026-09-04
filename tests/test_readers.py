@@ -69,6 +69,18 @@ def test_custom_reader_used_by_read(tmp_path):
     assert read(p)["v"].iloc[0] == 42
 
 
+def test_read_sqlite_rejects_bad_table_name(tmp_path):
+    import sqlite3
+
+    p = tmp_path / "t.sqlite"
+    with sqlite3.connect(p) as conn:
+        conn.execute("CREATE TABLE trades (id INTEGER)")
+    with pytest.raises(ValueError, match="invalid sqlite table name"):
+        read(p, table='trades"')
+    with pytest.raises(ValueError, match="invalid sqlite table name"):
+        read(p, table="trades;")
+
+
 def test_read_zip_single_member(tmp_path):
     import zipfile
 

@@ -82,7 +82,19 @@ def test_duplicates_reported_not_fatal():
     right = pd.DataFrame({"id": ["A1"]})
     result = link_tables(left, right, "id")
     assert result.duplicates["left"] == 1
+    assert result.duplicate_keys["left"] == ["A1"]
+    assert result.duplicate_keys["right"] == []
     assert result.matched_rows == 2
+
+
+def test_sample_limits_unmatched_and_duplicate_keys():
+    left = pd.DataFrame({"id": ["A1", "A1", "A1", "B2"]})
+    right = pd.DataFrame({"id": ["C1", "C1"]})
+    result = link_tables(left, right, "id", sample=1)
+    assert result.unmatched_left == ["A1"]
+    assert len(result.unmatched_right) == 1
+    assert result.duplicate_keys == {"left": ["A1"], "right": ["C1"]}
+    assert result.duplicates == {"left": 2, "right": 1}
 
 
 def test_nulls_reported():

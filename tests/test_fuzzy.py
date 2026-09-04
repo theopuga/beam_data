@@ -100,6 +100,25 @@ def test_left_on_right_on_different_names():
     assert result.matched["score"].iloc[0] == 1.0
 
 
+def test_unique_greedy_one_to_one():
+    left = pd.DataFrame({"pc": ["1", "1"], "sn": ["aa", "ab"]})
+    right = pd.DataFrame({"pc": ["1"], "sn": ["aa"]})
+    free = fuzzy_link_tables(left, right, on=["pc", "sn"], threshold=0.0)
+    assert len(free.matched) == 2
+    one = fuzzy_link_tables(left, right, on=["pc", "sn"], threshold=0.0, unique=True)
+    assert len(one.matched) == 1
+    assert one.matched["left_index"].iloc[0] == 0  # exact "aa" pair wins
+    assert one.matched["right_index"].nunique() == 1
+
+
+def test_unique_keeps_distinct_partners():
+    left = pd.DataFrame({"pc": ["1", "1"], "sn": ["aa", "bb"]})
+    right = pd.DataFrame({"pc": ["1", "1"], "sn": ["aa", "bb"]})
+    one = fuzzy_link_tables(left, right, on=["pc", "sn"], threshold=0.9, unique=True)
+    assert sorted(one.matched["left_index"]) == [0, 1]
+    assert sorted(one.matched["right_index"]) == [0, 1]
+
+
 def test_unknown_columns_raise():
     with pytest.raises(KeyError, match="lacks comparison"):
         fuzzy_link_tables(people_a(), people_b(), on=["nope"])

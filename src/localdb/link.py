@@ -40,6 +40,7 @@ class LinkResult:
     unmatched_left: list[str] = field(default_factory=list)
     unmatched_right: list[str] = field(default_factory=list)
     duplicates: dict[str, int] = field(default_factory=dict)
+    duplicate_keys: dict[str, list[str]] = field(default_factory=dict)
     nulls: dict[str, int] = field(default_factory=dict)
     dtype_mismatches: list[str] = field(default_factory=list)
 
@@ -59,10 +60,15 @@ def _check_column(df: pd.DataFrame, column: str, side: str) -> None:
 
 
 def _key_quality(left: pd.DataFrame, left_on: str,
-                 right: pd.DataFrame, right_on: str) -> tuple[dict, dict, list[str]]:
+                 right: pd.DataFrame, right_on: str,
+                 sample: int) -> tuple[dict, dict, list[str], dict[str, list[str]]]:
     duplicates = {
         "left": int(left[left_on].duplicated().sum()),
         "right": int(right[right_on].duplicated().sum()),
+    }
+    duplicate_keys = {
+        "left": _duplicated_keys(left, left_on, sample),
+        "right": _duplicated_keys(right, right_on, sample),
     }
     nulls = {
         "left": int(left[left_on].isna().sum()),
@@ -73,12 +79,22 @@ def _key_quality(left: pd.DataFrame, left_on: str,
         if str(left[left_on].dtype) != str(right[right_on].dtype)
         else []
     )
-    return duplicates, nulls, dtype_mismatches
+    return duplicates, nulls, dtype_mismatches, duplicate_keys
+
+
+def _sample_keys(values: pd.Series, sample: int) -> list[str]:
+    return [str(k) for k in sorted(values.dropna().unique(), key=str)[:sample]]
+
+
+def _duplicated_keys(df: pd.DataFrame, on: str, sample: int) -> list[str]:
+    dup_mask = df[on].duplicated(keep=False)
+    return _sample_keys(df.loc[dup_mask, on], sample)
 
 
 def link_tables(left: pd.DataFrame, right: pd.DataFrame, left_on: str,
                 right_on: str | None = None, left_key_type: str | None = None,
                 right_key_type: str | None = None, how: str = "inner",
+                sample: int = _MAX_UNMATCHED_SAMPLE,
                 left_name: str = "left", right_name: str = "right") -> LinkResult:
     """Join two frames on identifier columns and report link quality.
 
@@ -88,13 +104,16 @@ def link_tables(left: pd.DataFrame, right: pd.DataFrame, left_on: str,
             each side's key BEFORE joining (e.g. both "fsa" to link postal
             codes against an FSA lookup).
         how: merge strategy (inner/left/right/outer).
+        sample: max keys listed in unmatched_* and duplicate_keys samples.
     """
     right_on = right_on or left_on
     if how not in _VALID_HOW:
         raise ValueError(f"how must be one of {sorted(_VALID_HOW)}, got {how!r}")
     _check_column(left, left_on, "left")
     _check_column(right, right_on, "right")
-    duplicates, nulls, dtype_mismatches = _key_quality(left, left_on, right, right_on)
+    duplicates, nulls, dtype_mismatches, duplicate_keys = _key_quality(
+        left, left_on, right, right_on, sample
+    )
 
     left = left.copy()
     right = right.copy()
@@ -122,8 +141,8 @@ def link_tables(left: pd.DataFrame, right: pd.DataFrame, left_on: str,
         matched_rows = int(right[right_on].isin(left_keys).sum())
     else:
         matched_rows = int(left[left_on].isin(right_keys).sum())
-    unmatched_left = [str(k) for k in sorted(left_keys - right_keys, key=str)[:_MAX_UNMATCHED_SAMPLE]]
-    unmatched_right = [str(k) for k in sorted(right_keys - left_keys, key=str)[:_MAX_UNMATCHED_SAMPLE]]
+    unmatched_left = [str(k) for k in sorted(left_keys - right_keys, key=str)[:sample]]
+    unmatched_right = [str(k) for k in sorted(right_keys - left_keys, key=str)[:sample]]
 
     return LinkResult(
         joined=joined,
@@ -138,6 +157,7 @@ def link_tables(left: pd.DataFrame, right: pd.DataFrame, left_on: str,
         unmatched_left=unmatched_left,
         unmatched_right=unmatched_right,
         duplicates=duplicates,
+        duplicate_keys=duplicate_keys,
         nulls=nulls,
         dtype_mismatches=dtype_mismatches,
     )

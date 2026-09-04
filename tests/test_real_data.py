@@ -1,8 +1,8 @@
 """Real-data pilot tests: run against test_data/ when present, skip otherwise.
 
 These lock in the ground truths observed in the first real-data audit (see
-TODO.md). CI never sees test_data/ (gitignored), so every test here skips
-there by design.
+local TODO.md). test_data/ is gitignored, so these tests skip on a fresh
+clone by design; small checked-in equivalents live in tests/test_fixtures.py.
 """
 
 from pathlib import Path

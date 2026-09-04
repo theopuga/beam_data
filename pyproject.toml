@@ -20,6 +20,7 @@ excel = ["openpyxl>=3.1"]
 sql = ["duckdb>=1.0"]
 dev = [
     "pytest>=7.4",
+    "pytest-cov>=4.1",
     "ruff>=0.4",
 ]
 

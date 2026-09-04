@@ -71,6 +71,8 @@ def _read_json(path: Path, **kwargs: Any) -> pd.DataFrame:
 def _read_sqlite(path: Path, table: str | None = None, **kwargs: Any) -> pd.DataFrame:
     if table is None:
         raise ValueError("sqlite files need a table name: read(path, table=...)")
+    if '"' in table or ";" in table:
+        raise ValueError(f"invalid sqlite table name: {table!r}")
     with sqlite3.connect(path) as conn:
         return pd.read_sql_query(f'SELECT * FROM "{table}"', conn, **kwargs)
 

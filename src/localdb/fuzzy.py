@@ -101,6 +101,7 @@ def fuzzy_link_tables(left: pd.DataFrame, right: pd.DataFrame,
                       block_on: str | list[str] | None = None,
                       weights: dict[str, float] | None = None,
                       threshold: float = 0.85, max_pairs: int = 5_000_000,
+                      unique: bool = False,
                       left_name: str = "left", right_name: str = "right") -> FuzzyLinkResult:
     """Score candidate pairs across both frames and keep matches >= threshold.
 
@@ -112,6 +113,9 @@ def fuzzy_link_tables(left: pd.DataFrame, right: pd.DataFrame,
             pair is a candidate and max_pairs guards the explosion).
         weights: per-comparison-column weights; default equal.
         threshold: pair score (0-1) above which a pair is a match.
+        unique: greedy one-to-one matching — walk pairs by descending score,
+            keep the first pair for each left AND right row (one partner
+            max per side). Default False keeps all pairs above threshold.
     """
     pairs_spec = _column_pairs(left, right, on, left_on, right_on)
     comparisons = [c for c, _ in pairs_spec]
@@ -138,26 +142,43 @@ def fuzzy_link_tables(left: pd.DataFrame, right: pd.DataFrame,
             "add a block_on= column to restrict candidates"
         )
 
-    left_str = {c: left[c].fillna("").astype(str).reset_index(drop=True)
-                for c, _ in pairs_spec}
-    right_str = {c_: right[c_].fillna("").astype(str).reset_index(drop=True)
-                 for _, c_ in pairs_spec}
+    left_str = {c: left[c].fillna("").astype(str).tolist() for c, _ in pairs_spec}
+    right_str = {c_: right[c_].fillna("").astype(str).tolist() for _, c_ in pairs_spec}
 
     scores: list[float] = []
-    li = candidates["left_index"].to_numpy()
-    ri = candidates["right_index"].to_numpy()
+    cache: dict[tuple[str, str], float] = {}
+    li = candidates["left_index"].tolist()
+    ri = candidates["right_index"].tolist()
     for l_idx, r_idx in zip(li, ri):
         num = den = 0.0
         for c, c_ in pairs_spec:
-            a, b = left_str[c].iloc[l_idx], right_str[c_].iloc[r_idx]
+            a, b = left_str[c][l_idx], right_str[c_][r_idx]
             if a == "" or b == "":
                 continue
-            num += w[c] * _similarity(a, b)
+            key = (a, b)
+            sim = cache.get(key)
+            if sim is None:
+                sim = cache[key] = _similarity(a, b)
+            num += w[c] * sim
             den += w[c]
         scores.append(num / den if den else 0.0)
     candidates = candidates.assign(score=scores)
 
-    matched = candidates[candidates["score"] >= threshold].reset_index(drop=True)
+    matched = candidates[candidates["score"] >= threshold]
+    if unique:
+        keep: list[int] = []
+        seen_left: set[int] = set()
+        seen_right: set[int] = set()
+        ordered = matched.sort_values("score", ascending=False)
+        for i, l_idx, r_idx in zip(ordered.index, ordered["left_index"],
+                                   ordered["right_index"]):
+            if l_idx in seen_left or r_idx in seen_right:
+                continue
+            seen_left.add(int(l_idx))
+            seen_right.add(int(r_idx))
+            keep.append(i)
+        matched = matched.loc[keep]
+    matched = matched.reset_index(drop=True)
     match_rate_left = (
         matched["left_index"].nunique() / len(left) if len(left) else 1.0
     )

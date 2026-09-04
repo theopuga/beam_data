@@ -11,7 +11,15 @@ from localdb.link import LinkResult, link_tables
 from localdb.readers.core import read, supported_extensions
 
 _SQLITE_SUFFIXES = {".sqlite", ".db", ".sqlite3"}
-_SQL_EXTENSIONS = {".csv", ".tsv", ".parquet", ".pq", ".json", ".xlsx", ".xls", ".zip"}
+
+
+def _table_suffixes() -> set[str]:
+    """Registry-driven table extensions; sqlite files are tables of their own."""
+    return {f".{ext}" for ext in supported_extensions()} - _SQLITE_SUFFIXES
+
+
+def _table_file(p: Path) -> bool:
+    return p.is_file() and p.suffix.lower() in _table_suffixes()
 
 
 class Tables:
@@ -42,7 +50,7 @@ class Tables:
                     "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
                 ).fetchall()
             return sorted(name for (name,) in rows)
-        return sorted({p.stem for p in self.path.iterdir() if p.suffix.lower() in _SQL_EXTENSIONS})
+        return sorted({p.stem for p in self.path.iterdir() if _table_file(p)})
 
     def get(self, name: str, **kwargs: Any) -> pd.DataFrame:
         """Read one table (file stem, or sqlite table name) into a DataFrame."""
@@ -50,9 +58,7 @@ class Tables:
             return read(self.path, table=name, **kwargs)
         matches = sorted(
             p for p in self.path.iterdir()
-            if p.is_file()
-            and p.stem == name
-            and p.suffix.lower().lstrip(".") in supported_extensions()
+            if p.is_file() and p.stem == name and _table_file(p)
         )
         if not matches:
             available = ", ".join(self.names()) or "(none)"
@@ -114,15 +120,21 @@ class Tables:
     def link(self, left_table: str, right_table: str, left_on: str,
              right_on: str | None = None, left_key_type: str | None = None,
              right_key_type: str | None = None, how: str = "inner",
+             left_kwargs: dict[str, Any] | None = None,
+             right_kwargs: dict[str, Any] | None = None,
              **get_kwargs: Any) -> LinkResult:
         """Link two tables in this set on identifier columns.
 
         Convenience over get() + link_tables: both tables are read, keys are
         standardized per the given key types, and a LinkResult (joined table
         + match report) is returned. See localdb.link.link_tables.
+
+        Read kwargs shared by both sides go through get_kwargs; per-side read
+        kwargs (e.g. only one side needs dtype= or encoding=) go through
+        left_kwargs/right_kwargs, which win on conflicts.
         """
-        left = self.get(left_table, **get_kwargs)
-        right = self.get(right_table, **get_kwargs)
+        left = self.get(left_table, **{**get_kwargs, **(left_kwargs or {})})
+        right = self.get(right_table, **{**get_kwargs, **(right_kwargs or {})})
         return link_tables(
             left,
             right,
@@ -136,10 +148,7 @@ class Tables:
         )
 
     def _files_with_stem(self, stem: str) -> list[Path]:
-        return sorted(
-            p for p in self.path.iterdir()
-            if p.is_file() and p.stem == stem and p.suffix.lower() in _SQL_EXTENSIONS
-        )
+        return sorted(p for p in self.path.iterdir() if p.stem == stem and _table_file(p))
 
     def __repr__(self) -> str:
         kind = "sqlite" if self._is_sqlite else "folder"

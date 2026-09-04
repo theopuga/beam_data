@@ -5,7 +5,7 @@ import sqlite3
 import pandas as pd
 import pytest
 
-from localdb import Tables, read
+from localdb import Tables, read, register_reader
 
 
 @pytest.fixture()
@@ -47,6 +47,22 @@ def test_folder_ambiguous_stem_raises(folder):
     pd.DataFrame({"a": [1]}).to_parquet(folder / "clients.parquet")
     with pytest.raises(ValueError, match="ambiguous"):
         Tables(folder).get("clients")
+
+
+def test_custom_reader_extension_discovered(tmp_path):
+    register_reader("feathery", lambda p, **kw: pd.DataFrame({"v": [7]}))
+    (tmp_path / "extra.feathery").write_text("x", encoding="utf-8")
+    ts = Tables(tmp_path)
+    assert "extra" in ts.names()
+    assert ts.get("extra")["v"].iloc[0] == 7
+
+
+def test_sqlite_file_in_folder_is_not_a_table(tmp_path, sqlite_file):
+    pd.DataFrame({"id": [1], "name": ["a"]}).to_csv(tmp_path / "clients.csv", index=False)
+    ts = Tables(tmp_path)
+    assert ts.names() == ["clients"]
+    with pytest.raises(KeyError, match="not found"):
+        ts.get("data")
 
 
 def test_folder_get_passthrough_kwargs(folder):
@@ -92,6 +108,24 @@ def test_folder_query_quoted_stems(tmp_path):
     pd.DataFrame({"id": [1, 2], "v": ["a", "b"]}).to_csv(tmp_path / "17-18 data.csv", index=False)
     out = Tables(tmp_path).query('SELECT id FROM "17-18 data" WHERE id = 2')
     assert out["id"].tolist() == [2]
+
+
+def test_tables_link_per_side_kwargs(tmp_path):
+    pytest.importorskip("pyarrow")
+    pd.DataFrame({"client_id": ["007", "008"], "v": [1, 2]}).to_csv(
+        tmp_path / "clients.csv", index=False
+    )
+    pd.DataFrame({"client_id": ["007", "008"], "w": [9, 8]}).to_parquet(
+        tmp_path / "refs.parquet"
+    )
+    ts = Tables(tmp_path)
+    with pytest.raises((ValueError, TypeError)):  # shared dtype= breaks the parquet side
+        ts.link("clients", "refs", "client_id", dtype={"client_id": "string"})
+    result = ts.link(
+        "clients", "refs", "client_id", left_kwargs={"dtype": {"client_id": "string"}}
+    )
+    assert result.match_rate == 1.0
+    assert result.joined["w"].tolist() == [9, 8]
 
 
 def test_repr(folder):
