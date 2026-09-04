@@ -10,7 +10,7 @@ from localdb.link import LinkResult, link_tables
 from localdb.readers.core import read, supported_extensions
 
 _SQLITE_SUFFIXES = {".sqlite", ".db", ".sqlite3"}
-_SQL_EXTENSIONS = {".csv", ".tsv", ".parquet", ".pq", ".json"}
+_SQL_EXTENSIONS = {".csv", ".tsv", ".parquet", ".pq", ".json", ".xlsx", ".xls"}
 
 
 class Tables:

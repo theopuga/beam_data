@@ -45,6 +45,7 @@ Thumbs.db
 
 # Project artifacts
 reports/
+test_data/
 *.log
 
 # Data pulled during runs (keep configs, not data)

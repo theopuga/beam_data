@@ -27,6 +27,13 @@ def test_folder_names(folder):
     assert Tables(folder).names() == ["clients", "refs"]
 
 
+def test_folder_names_include_excel(tmp_path):
+    pytest.importorskip("openpyxl")
+    pd.DataFrame({"a": [1]}).to_excel(tmp_path / "sheet.xlsx", index=False)
+    assert Tables(tmp_path).names() == ["sheet"]
+    assert Tables(tmp_path).get("sheet")["a"].iloc[0] == 1
+
+
 def test_folder_get_by_stem(folder):
     assert Tables(folder).get("clients")["name"].tolist() == ["a", "b"]
 
