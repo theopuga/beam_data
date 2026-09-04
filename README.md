@@ -14,6 +14,7 @@ No connections, no servers: the files are the tables.
 | SQL across files | `.query(sql)` — duckdb for folders, stdlib sqlite3 for `.sqlite` |
 | Exact linking on identifiers | `ts.link(a, b, left_on=..., key_type=...)` |
 | Fuzzy linking for corrupted keys | `fuzzy_link_tables(a, b, on=[...], block_on=[...])` |
+| Pre-model feature audit | `audit_features(df, target=, holdout_mask=...)` → report |
 | Key standardization | `standardize(df, col, kind=...)` + `register_kind()` |
 | Custom file formats | `register_reader(ext, fn)` |
 | Declare datasets once | `load_catalog("catalog.yaml")` |
@@ -117,6 +118,37 @@ Similarity is stdlib `difflib` (exact = 1.0); missing fields are excluded
 from a pair's score. Always pass `block_on` — without it every left/right
 combination is a candidate.
 
+## Feature audit (pre-model)
+
+Flag features before they go into a model: dead columns, target
+look-alikes, temporal and train/holdout leakage. Report, not auto-drop:
+
+```python
+from localdb.feature_flags import audit_features
+
+report = audit_features(
+    df,
+    target="churned",
+    time_column="signup_date",
+    available_as_of={"credit_score": "credit_score_pulled_at"},
+    holdout_mask=df["signup_date"] >= "2026-06-01",
+)
+
+report.summary()           # one row per flagged feature, reasons collapsed
+report.flagged_features()  # just the names
+report.save("reports/feature_flags.csv")
+```
+
+`audit_features(df)` alone runs the non-predictive checks (constant /
+near-zero variance, exact duplicate columns); `target=` unlocks target
+correlation (Pearson for numeric pairs, normalized MI for categorical),
+`time_column=`/`available_as_of=` unlocks temporal leakage, `holdout_mask=`
+unlocks adversarial validation. Every flag carries a score and a reason.
+Column names are never hardcoded — checks sort numeric vs categorical by
+dtype and run on whatever the frame has. `scikit-learn` and `xgboost` are
+optional: without them the categorical-MI and adversarial checks simply
+return no flags. Thresholds are keyword args with defaults.
+
 ## Validated on real data
 
 - Licence/registration extracts (csv + xlsx): links with known ground truth
@@ -128,6 +160,8 @@ combination is a candidate.
   as a regression test
 - Chinook sqlite: multi-table SQL, one-to-many links, cleaners on real
   international phone/email data
+- Feature audit smoke on the licence + chinook extracts: flags exactly the
+  genuinely constant/provenance columns, no false positives
 
 ## Known limits
 
@@ -137,6 +171,8 @@ combination is a candidate.
   need custom kinds
 - Fuzzy scoring suits up to ~100k candidate pairs with `block_on`; beyond
   that a recordlinkage/Splink backend is the escalation path
+- Adversarial feature check uses XGBoost on numeric features only;
+  categorical-only frames are skipped there (the MI check still applies)
 
 ## Development
 
