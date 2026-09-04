@@ -68,13 +68,17 @@ def _read_json(path: Path, **kwargs: Any) -> pd.DataFrame:
     return pd.read_json(path, **kwargs)
 
 
-def _read_sqlite(path: Path, table: str | None = None, **kwargs: Any) -> pd.DataFrame:
+def _read_sqlite(path: Path, table: str | None = None, columns: list[str] | None = None,
+                 **kwargs: Any) -> pd.DataFrame:
     if table is None:
         raise ValueError("sqlite files need a table name: read(path, table=...)")
-    if '"' in table or ";" in table:
-        raise ValueError(f"invalid sqlite table name: {table!r}")
+    names = [table, *(columns or [])]
+    bad = [n for n in names if '"' in n or ";" in n]
+    if bad:
+        raise ValueError(f"invalid sqlite identifier(s): {bad}")
+    select = "*" if columns is None else ", ".join(f'"{c}"' for c in columns)
     with sqlite3.connect(path) as conn:
-        return pd.read_sql_query(f'SELECT * FROM "{table}"', conn, **kwargs)
+        return pd.read_sql_query(f'SELECT {select} FROM "{table}"', conn, **kwargs)
 
 
 def _read_zip(path: Path, member: str | None = None, **kwargs: Any) -> pd.DataFrame:

@@ -128,6 +128,82 @@ def test_tables_link_per_side_kwargs(tmp_path):
     assert result.joined["w"].tolist() == [9, 8]
 
 
+def test_get_column_pruning_pushdown(tmp_path):
+    pytest.importorskip("pyarrow")
+    pd.DataFrame({"a": [1, 2], "b": ["x", "y"], "c": [3.0, 4.0]}).to_parquet(
+        tmp_path / "t.parquet")
+    out = Tables(tmp_path).get("t", columns=["b", "a"])
+    assert list(out.columns) == ["b", "a"]
+
+
+def test_get_column_pruning_csv(tmp_path):
+    pd.DataFrame({"a": [1, 2], "b": ["x", "y"]}).to_csv(tmp_path / "t.csv", index=False)
+    out = Tables(tmp_path).get("t", columns=["b"])
+    assert list(out.columns) == ["b"]
+
+
+def test_get_column_pruning_sqlite(tmp_path, sqlite_file):
+    out = Tables(sqlite_file).get("trades", columns=["amt"])
+    assert list(out.columns) == ["amt"] and out["amt"].tolist() == [10.0, 20.0]
+
+
+def test_get_column_pruning_json_reads_whole_and_filters(tmp_path):
+    pd.DataFrame({"a": [1], "b": ["x"]}).to_json(tmp_path / "t.json", orient="records")
+    out = Tables(tmp_path).get("t", columns=["a"])
+    assert list(out.columns) == ["a"]
+
+
+def test_get_columns_and_usecols_conflict(tmp_path):
+    pd.DataFrame({"a": [1]}).to_csv(tmp_path / "t.csv", index=False)
+    with pytest.raises(ValueError, match="not both"):
+        Tables(tmp_path).get("t", columns=["a"], usecols=["a"])
+
+
+def test_query_join_zip_member(tmp_path):
+    pytest.importorskip("duckdb")
+    pd.DataFrame({"id": [1], "name": ["a"]}).to_csv(tmp_path / "clients.csv", index=False)
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "orders.zip", "w") as z:
+        z.writestr("orders.csv", "id,amount\n1,9.5\n")
+    out = Tables(tmp_path).query(
+        "SELECT c.name, o.amount FROM clients c JOIN orders o USING (id)"
+    )
+    assert out["amount"].iloc[0] == 9.5
+
+
+def test_query_zip_multi_member_views(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "archive.zip", "w") as z:
+        z.writestr("one.csv", "id,v\n1,a\n")
+        z.writestr("two.csv", "id,v\n2,b\n")
+    ts = Tables(tmp_path)
+    out = ts.query('SELECT * FROM "archive__two"')
+    assert out["v"].iloc[0] == "b"
+
+
+def test_query_survives_unreadable_table(tmp_path):
+    pytest.importorskip("duckdb")
+    pd.DataFrame({"id": [1], "v": ["a"]}).to_csv(tmp_path / "good.csv", index=False)
+    (tmp_path / "bad.csv").write_bytes(b"caf\xe9;stuff\n1;2\n")  # not utf-8
+    with pytest.warns(UserWarning, match="skipped"):
+        out = Tables(tmp_path).query("SELECT * FROM good")
+    assert out["v"].iloc[0] == "a"
+
+
+def test_query_zip_without_tabular_members_warns(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "imgs.zip", "w") as z:
+        z.writestr("pic.bin", "binary")
+    with pytest.warns(UserWarning, match="no csv/tsv members"):
+        out = Tables(tmp_path).query("SELECT 1 AS x")
+    assert out["x"].iloc[0] == 1
+
+
 def test_repr(folder):
     assert "tables=" in repr(Tables(folder))
 

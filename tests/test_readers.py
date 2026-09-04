@@ -75,9 +75,9 @@ def test_read_sqlite_rejects_bad_table_name(tmp_path):
     p = tmp_path / "t.sqlite"
     with sqlite3.connect(p) as conn:
         conn.execute("CREATE TABLE trades (id INTEGER)")
-    with pytest.raises(ValueError, match="invalid sqlite table name"):
+    with pytest.raises(ValueError, match="invalid sqlite identifier"):
         read(p, table='trades"')
-    with pytest.raises(ValueError, match="invalid sqlite table name"):
+    with pytest.raises(ValueError, match="invalid sqlite identifier"):
         read(p, table="trades;")
 
 

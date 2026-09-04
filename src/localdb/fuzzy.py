@@ -1,9 +1,10 @@
 """Fuzzy linking: scored candidate pairs when exact keys cannot match.
 
-Pure-stdlib implementation (difflib) — no extra dependencies. Workflow:
-block candidates on a cheap shared column, score each candidate pair as a
-weighted average of per-column similarities (exact match = 1.0, otherwise
-SequenceMatcher ratio), and keep pairs scoring >= threshold.
+Blocking + weighted similarity scoring with no required extra dependencies:
+candidates are restricted by shared block values, scored as a weighted
+average of per-column similarities (exact = 1.0, otherwise normalized
+indel similarity — rapidfuzz when installed, stdlib difflib otherwise),
+and pairs scoring >= threshold are kept.
 
 Missing values exclude a column from both numerator and denominator, so a
 pair is judged only on fields both sides actually have. The result reports
@@ -72,10 +73,34 @@ def _column_pairs(left: pd.DataFrame, right: pd.DataFrame,
     return list(zip(left_on, right_on))
 
 
-def _similarity(a: str, b: str) -> float:
+def _difflib_similarity(a: str, b: str) -> float:
     if a == b:
         return 1.0
     return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+try:
+    from rapidfuzz.distance import Indel as _Indel
+
+    def _rapidfuzz_similarity(a: str, b: str) -> float:
+        if a == b:
+            return 1.0
+        return float(_Indel.normalized_similarity(a, b))
+except ImportError:  # rapidfuzz not installed; stdlib fallback
+    _rapidfuzz_similarity = None
+
+
+def _similarity(a: str, b: str) -> float:
+    """Per-pair similarity: exact = 1.0, else normalized indel similarity.
+
+    Uses rapidfuzz (C++) when installed — the same normalized-indel metric
+    difflib's ratio approximates, roughly two orders of magnitude faster —
+    and falls back to stdlib difflib otherwise. Scores can differ from the
+    difflib backend by a few points on messy strings.
+    """
+    if _rapidfuzz_similarity is not None:
+        return _rapidfuzz_similarity(a, b)
+    return _difflib_similarity(a, b)
 
 
 def _candidate_pairs(left: pd.DataFrame, right: pd.DataFrame,

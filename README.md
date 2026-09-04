@@ -28,6 +28,7 @@ pip install -e ".[dev]"        # core + test tools
 pip install -e ".[parquet]"    # pyarrow, for parquet files
 pip install -e ".[excel]"      # openpyxl, for .xlsx
 pip install -e ".[sql]"        # duckdb, for SQL across folder files
+pip install -e ".[fuzzy]"      # rapidfuzz, ~10x faster fuzzy scoring
 ```
 
 Without extras: csv/tsv/json/zip reading, sqlite querying, linking, fuzzy
@@ -45,10 +46,18 @@ df = localdb.read("data/warehouse.sqlite", table="clients")
 ts = localdb.tables("data/downloads/")           # a folder is the table set
 ts.names()                                       # tables by file stem
 df = ts.get("clients", dtype={"client_id": "string"})   # kwargs reach pandas
+df = ts.get("companies", columns=["CompanyNumber", "PostCode"])  # pruned read
 df = ts.query("SELECT * FROM clients JOIN refs USING (id)")  # needs localdb[sql]
 
 ts = localdb.tables("data/warehouse.sqlite")     # sqlite works the same way
 ```
+
+`columns=` prunes the read where the format supports pushdown (parquet
+`columns=`, csv/tsv/excel/zip `usecols=`, sqlite `SELECT col`); json and
+custom readers read whole and filter. Zip members with csv/tsv content
+join via SQL too: a single-tabular-member zip becomes the zip's stem view,
+a multi-member zip gets one view per member (`<stem>__<member>`); members
+are extracted to a temp dir per query.
 
 Ambiguous stems (`clients.csv` + `clients.parquet`) raise rather than guess;
 a `.sqlite` file inside a folder is its own `Tables`, not a table.
@@ -83,9 +92,11 @@ result.duplicates           # per-side duplicate key counts (reported, not fatal
 result.nulls                # per-side null key counts
 ```
 
-Shipped key cleaners: `postal_code` (case/spaces/ZIP+4), `fsa` (extracts the
-FSA from a postal code), `client_id`, `phone` (international digits, NANP
-country-code strip), `email`. Register your own:
+Shipped key cleaners: `postal_code` (case/spaces/ZIP+4), `fsa` (extracts
+the FSA from a postal code), `uk_postcode` (canonical `EC1A 1BB`),
+`cep` (Brazilian `12345-678`), `plz` (DE/CH/AT digits), `client_id`,
+`phone` (international digits, NANP country-code strip), `email`. Register
+your own:
 
 ```python
 localdb.register_kind("ean13_valid", my_check_digit_validator)
@@ -114,9 +125,10 @@ result.best_matches()      # highest-scoring partner per left row
 result.matched             # all pairs >= threshold with scores
 ```
 
-Similarity is stdlib `difflib` (exact = 1.0); missing fields are excluded
-from a pair's score. Always pass `block_on` — without it every left/right
-combination is a candidate.
+Similarity is normalized-indel (exact = 1.0): stdlib `difflib` by default,
+or `rapidfuzz` when installed (`localdb[fuzzy]`) — same metric, roughly
+10x faster. Missing fields are excluded from a pair's score. Always pass
+`block_on` — without it every left/right combination is a candidate.
 
 ## Feature audit (pre-model)
 
@@ -170,12 +182,15 @@ defaults.
 
 ## Known limits
 
-- Whole files load into memory — `chunksize=` is the passthrough workaround
-- Zip members are readable but not SQL-joinable via duckdb
-- `postal_code` cleaner is North-America-oriented; international addresses
-  need custom kinds
-- Fuzzy scoring suits up to ~100k candidate pairs with `block_on`; beyond
-  that a recordlinkage/Splink backend is the escalation path
+- Rows still load whole — `columns=` prunes width (pushdown for parquet,
+  csv, sqlite), `chunksize=` remains the row-streaming workaround
+- Zip SQL queries extract members to a temp dir per query; repeated heavy
+  queries re-extract (a caching layer is planned)
+- Postal cleaners are per-country, chosen by kind (`postal_code`, `fsa`,
+  `uk_postcode`, `cep`, `plz`) — there is no country auto-detection
+- Fuzzy scoring on stdlib difflib suits ~100k candidate pairs with
+  `block_on`; the rapidfuzz extra is ~10x faster (FEBRL scored in 0.3s)
+  and pushes that ceiling out well past a million
 
 ## Development
 

@@ -22,6 +22,15 @@ def people_b():
     })
 
 
+def test_similarity_backends(monkeypatch):
+    import localdb.fuzzy as fz
+
+    assert fz._similarity("abc", "abc") == 1.0
+    monkeypatch.setattr(fz, "_rapidfuzz_similarity", None)
+    assert fz._similarity("abc", "abc") == 1.0  # exact stays exact on difflib fallback
+    assert 0 < fz._similarity("abc", "abd") < 1
+
+
 def test_exact_rows_score_one():
     result = fuzzy_link_tables(people_a(), people_b().head(1), on=["postcode", "given_name"])
     assert len(result.matched) == 1

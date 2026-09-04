@@ -31,6 +31,24 @@ def test_fsa_extracts_first_three():
     assert df["key"].tolist() == ["M5V", pd.NA, pd.NA, "K1A"]
 
 
+def test_uk_postcode():
+    df = pd.DataFrame({"key": [" ec1a 1bb ", "M1 1AE", "m60-1da", "CR2 6XH", "12345", None]})
+    standardize(df, "key", kind="uk_postcode")
+    assert df["key"].tolist() == ["EC1A 1BB", "M1 1AE", "M60 1DA", "CR2 6XH", pd.NA, pd.NA]
+
+
+def test_cep():
+    df = pd.DataFrame({"key": ["12227-000", "12227000", "12.227-000", "1234", None]})
+    standardize(df, "key", kind="cep")
+    assert df["key"].tolist() == ["12227-000", "12227-000", "12227-000", pd.NA, pd.NA]
+
+
+def test_plz():
+    df = pd.DataFrame({"key": ["70174", "DE-10115", "12 345", None]})
+    standardize(df, "key", kind="plz")
+    assert df["key"].tolist() == ["70174", "10115", "12345", pd.NA]
+
+
 def test_client_id():
     df = pd.DataFrame({"key": [" ab 12 ", None, "X-9"]})
     standardize(df, "key", kind="client_id")
