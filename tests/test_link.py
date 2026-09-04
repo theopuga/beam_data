@@ -35,9 +35,20 @@ def test_exact_link_full_match():
 def test_partial_link_reports_unmatched():
     result = link_tables(clients(), refs(), "client_id")
     assert result.match_rate == pytest.approx(2 / 4)
+    assert result.match_rate_left == pytest.approx(2 / 4)
+    assert result.match_rate_right == pytest.approx(2 / 3)
     assert result.matched_rows == 2
     assert result.unmatched_left == ["C3", "D4"]
     assert result.unmatched_right == ["E5"]
+
+
+def test_directional_rates_differ_from_symmetric():
+    left = pd.DataFrame({"id": ["A1", "B2"]})
+    right = pd.DataFrame({"id": ["A1", "C3", "D4"]})
+    result = link_tables(left, right, "id")
+    assert result.match_rate_left == 0.5
+    assert result.match_rate_right == pytest.approx(1 / 3)
+    assert result.match_rate == pytest.approx(1 / 3)
 
 
 def test_key_type_standardization_enables_match():

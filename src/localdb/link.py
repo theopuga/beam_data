@@ -35,6 +35,8 @@ class LinkResult:
     how: str
     matched_rows: int
     match_rate: float
+    match_rate_left: float = 0.0
+    match_rate_right: float = 0.0
     unmatched_left: list[str] = field(default_factory=list)
     unmatched_right: list[str] = field(default_factory=list)
     duplicates: dict[str, int] = field(default_factory=dict)
@@ -45,7 +47,8 @@ class LinkResult:
         return (
             f"LinkResult({self.left_table} <-> {self.right_table} on {self.on!r} "
             f"[{self.how}]: {self.matched_rows} matched rows, "
-            f"match_rate={self.match_rate:.3f})"
+            f"match_rate={self.match_rate:.3f} "
+            f"(left {self.match_rate_left:.3f} / right {self.match_rate_right:.3f}))"
         )
 
 
@@ -130,6 +133,8 @@ def link_tables(left: pd.DataFrame, right: pd.DataFrame, left_on: str,
         how=how,
         matched_rows=matched_rows,
         match_rate=float(match_rate),
+        match_rate_left=len(matched) / len(left_keys) if left_keys else 1.0,
+        match_rate_right=len(matched) / len(right_keys) if right_keys else 1.0,
         unmatched_left=unmatched_left,
         unmatched_right=unmatched_right,
         duplicates=duplicates,
