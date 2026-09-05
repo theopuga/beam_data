@@ -319,3 +319,28 @@ def test_zip_cache_multi_member_names_preserved(tmp_path):
     assert out["v"].iloc[0] == "b"
     entry = next(p for p in _cache_zip_dir().iterdir() if not p.name.startswith(".tmp-"))
     assert sorted(p.name for p in entry.glob("*.parquet")) == ["member_0.parquet", "member_1.parquet"]
+
+
+def test_zip_cache_nested_member_paths(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "bundle.zip", "w") as z:
+        z.writestr("sub/dir/inner.csv", "id,v\n1,a\n")
+    out = Tables(tmp_path).query('SELECT * FROM "bundle"')  # single member -> zip stem
+    assert out["v"].iloc[0] == "a"
+
+
+def test_zip_cache_unconvertible_member_marked_failed(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "legacy.zip", "w") as z:
+        z.writestr("legacy.csv", "id,nom\n1,caf\xe9\n".encode("latin-1"))  # not utf-8
+    ts = Tables(tmp_path)
+    with pytest.warns(UserWarning, match="zip cache unavailable"):
+        ts.query("SELECT 1 AS x")
+    markers = [p for p in _cache_zip_dir().iterdir() if p.name.endswith(".failed")]
+    assert len(markers) == 1  # conversion failed once, not silently retried
+    with pytest.warns(UserWarning, match="previous conversion attempt failed"):
+        ts.query("SELECT 1 AS x")  # later queries skip the build retry
