@@ -56,8 +56,11 @@ ts = localdb.tables("data/warehouse.sqlite")     # sqlite works the same way
 `columns=`, csv/tsv/excel/zip `usecols=`, sqlite `SELECT col`); json and
 custom readers read whole and filter. Zip members with csv/tsv content
 join via SQL too: a single-tabular-member zip becomes the zip's stem view,
-a multi-member zip gets one view per member (`<stem>__<member>`); members
-are extracted to a temp dir per query.
+a multi-member zip gets one view per member (`<stem>__<member>`). The
+first query on a zip converts its members to parquet in a local cache
+(`$LOCALDB_CACHE_DIR`, size-capped with LRU eviction; `Tables(path,
+cache=False)` to disable) — later queries scan that instead of
+re-extracting and re-parsing the zip every time.
 
 Ambiguous stems (`clients.csv` + `clients.parquet`) raise rather than guess;
 a `.sqlite` file inside a folder is its own `Tables`, not a table.
@@ -184,8 +187,12 @@ defaults.
 
 - Rows still load whole — `columns=` prunes width (pushdown for parquet,
   csv, sqlite), `chunksize=` remains the row-streaming workaround
-- Zip SQL queries extract members to a temp dir per query; repeated heavy
-  queries re-extract (a caching layer is planned)
+- Zip SQL queries keep a parquet copy of each zip's members in a local
+  cache (first query pays the conversion — 850k-row Companies House zip:
+  3.0s build, then ~0.02s/query vs 1.8s uncached; cap 10 GB via
+  `LOCALDB_CACHE_MAX_GB`, `Tables(path, cache=False)` opts out). Zips
+  whose CSV duckdb cannot convert fall back to per-query extraction
+  (warned once)
 - Postal cleaners are per-country, chosen by kind (`postal_code`, `fsa`,
   `uk_postcode`, `cep`, `plz`) — there is no country auto-detection
 - Fuzzy scoring on stdlib difflib suits ~100k candidate pairs with

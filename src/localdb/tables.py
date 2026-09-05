@@ -42,10 +42,12 @@ class Tables:
     Tables (it is silently absent from the folder's names()).
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, cache: bool = True) -> None:
+        """cache=False skips the on-disk zip-query cache (per-query temp extraction)."""
         self.path = Path(path)
         if not self.path.exists():
             raise FileNotFoundError(f"{self.path} does not exist")
+        self._cache = cache
         self._is_sqlite = self.path.is_file() and self.path.suffix.lower() in _SQLITE_SUFFIXES
         if not self._is_sqlite and not self.path.is_dir():
             raise NotADirectoryError(
@@ -101,9 +103,11 @@ class Tables:
 
         Files become views named by their quoted stem (csv/tsv/parquet/json/
         xlsx supported; xlsx reads all columns as varchar). Zip members with
-        csv/tsv content are extracted to a temp dir for the query — a
-        single-tabular-member zip becomes the zip's stem view, a multi-
-        member zip gets one view per member named "<stem>__<member>".
+        csv/tsv content are converted to parquet in a local cache on first
+        query ($LOCALDB_CACHE_DIR, size-capped; Tables(..., cache=False) for
+        per-query temp extraction instead) — a single-tabular-member zip
+        becomes the zip's stem view, a multi-member zip gets one view per
+        member named "<stem>__<member>".
         SQLite files are queried directly via the stdlib sqlite3. Tables
         whose format duckdb cannot read are skipped with a warning.
         """
@@ -161,36 +165,131 @@ class Tables:
                 shutil.rmtree(extracted, ignore_errors=True)
 
     def _register_zip_views(self, con: Any, zip_path: Path, stem: str) -> str | None:
-        """Extract the zip's tabular members to a temp dir; view them in duckdb.
+        """View the zip's tabular members in duckdb.
 
-        One tabular member -> view named by the zip stem; several members ->
-        one view each, named "<stem>__<member-stem>" (dup member stems get a
-        numeric suffix). Non-tabular members are ignored. Returns the temp
-        dir for the caller to remove after the query; None if the zip holds
-        no csv/tsv members (warned).
+        With caching on, members are converted to parquet in the local cache
+        on first query and later queries view the cached files (returns None
+        — nothing to clean up). With caching off, members are extracted to a
+        temp dir for this query; returns the temp dir for the caller to
+        remove, or None if the zip holds no csv/tsv members (warned).
+        Cache failures warn and fall back to per-query temp extraction.
         """
         import zipfile
 
-        members = [
-            m for m in zipfile.ZipFile(zip_path).namelist()
-            if not m.endswith("/") and m.rsplit(".", 1)[-1].lower() in ("csv", "tsv", "txt")
-        ]
+        with zipfile.ZipFile(zip_path) as z:
+            members = [
+                m for m in z.namelist()
+                if not m.endswith("/") and m.rsplit(".", 1)[-1].lower() in ("csv", "tsv", "txt")
+            ]
         if not members:
             warnings.warn(f"zip {zip_path.name!r} has no csv/tsv members; skipped")
             return None
-        extracted = tempfile.mkdtemp(prefix="localdb_zip_")
+        if self._cache:
+            try:
+                self._register_cached_zip_views(con, zip_path, stem, members)
+                return None
+            except Exception as exc:  # noqa: BLE001 — advisory: cache is best-effort
+                detail = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                warnings.warn(
+                    f"zip cache unavailable for {zip_path.name!r} ({detail}); "
+                    "using per-query temp extraction"
+                )
+        return self._register_temp_zip_views(con, zip_path, members, stem)
+
+    def _register_cached_zip_views(self, con: Any, zip_path: Path, stem: str,
+                                   members: list[str]) -> None:
+        """View the zip's members from the parquet cache, building it if needed."""
+        from localdb import cache
+
+        root = cache.zip_cache_root()
+        key = cache.zip_key(zip_path)
+        if cache.is_failed(root, key):
+            raise RuntimeError("previous conversion attempt failed for this zip")
+        entry = root / "zip" / key
+        if not entry.is_dir():
+            try:
+                self._build_zip_cache(root, key, zip_path, members)
+                cache.enforce_cap(root)
+            except Exception:  # don't retry the build on every query
+                cache.mark_failed(root, key)
+                raise
+        names = self._zip_view_names(stem, members)
+        try:
+            self._create_parquet_views(con, entry, names)
+        except Exception:  # noqa: BLE001 — corrupt/incomplete entry: rebuild once
+            cache.discard_entry(root, key)
+            self._build_zip_cache(root, key, zip_path, members)
+            self._create_parquet_views(con, entry, names)
+
+    def _build_zip_cache(self, root: Path, key: str, zip_path: Path,
+                         members: list[str]) -> None:
+        """Extract members, convert each to parquet via duckdb, publish atomically."""
+        import zipfile
+
+        import duckdb
+
+        from localdb import cache
+
+        cache.clean_stale_staging(root)
+        staging = cache.new_staging_dir(root, key)
+        try:
+            with zipfile.ZipFile(zip_path) as z:
+                for member in members:
+                    z.extract(member, staging)
+            builder = duckdb.connect()
+            try:
+                for i, member in enumerate(members):
+                    src = (staging / member).resolve().as_posix().replace("'", "''")
+                    dst = (staging / f"member_{i}.parquet").as_posix().replace("'", "''")
+                    builder.execute(
+                        f"COPY (SELECT * FROM read_csv_auto('{src}')) TO '{dst}'"
+                    )
+            finally:
+                builder.close()
+            for f in staging.rglob("*"):  # keep only the parquet in the entry
+                if f.is_file() and f.suffix.lower() != ".parquet":
+                    f.unlink()
+            cache.finalize_entry(root, key, staging)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+    @staticmethod
+    def _zip_view_names(stem: str, members: list[str]) -> list[str]:
+        """Deterministic member -> view-name mapping (zip stem, or stem__member)."""
         used: set[str] = set()
+        names = []
+        for i, member in enumerate(members):
+            name = stem if len(members) == 1 else f"{stem}__{Path(member).stem}"
+            if name in used:
+                name = f"{name}_{i}"
+            used.add(name)
+            names.append(name)
+        return names
+
+    @staticmethod
+    def _create_parquet_views(con: Any, entry: Path, names: list[str]) -> None:
+        for i, name in enumerate(names):
+            pq = (entry / f"member_{i}.parquet").as_posix().replace("'", "''")
+            con.execute(
+                f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM read_parquet(\'{pq}\')'
+            )
+
+    def _register_temp_zip_views(self, con: Any, zip_path: Path, members: list[str],
+                                 stem: str) -> str | None:
+        """Per-query path (cache off or unavailable): extract to temp, csv views."""
+        import zipfile
+
+        extracted = tempfile.mkdtemp(prefix="localdb_zip_")
+        names = self._zip_view_names(stem, members)
         with zipfile.ZipFile(zip_path) as z:
             for i, member in enumerate(members):
                 z.extract(member, extracted)
                 path = (Path(extracted) / member).resolve()
-                name = stem if len(members) == 1 else f"{stem}__{Path(member).stem}"
-                if name in used:
-                    name = f"{name}_{i}"
-                used.add(name)
+                quoted = path.as_posix().replace("'", "''")
                 con.execute(
-                    f'CREATE VIEW "{name}" AS '
-                    f"SELECT * FROM read_csv_auto('{path.as_posix()}')"
+                    f'CREATE VIEW "{names[i]}" AS '
+                    f"SELECT * FROM read_csv_auto('{quoted}')"
                 )
         return extracted
 

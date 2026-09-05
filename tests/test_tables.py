@@ -212,3 +212,110 @@ def test_read_still_exported(tmp_path):
     p = tmp_path / "x.csv"
     p.write_text("a\n7\n", encoding="utf-8")
     assert read(p)["a"].iloc[0] == 7
+
+
+# --- zip query cache ---
+
+
+def _cache_zip_dir():
+    import os
+    from pathlib import Path
+
+    return Path(os.environ["LOCALDB_CACHE_DIR"]) / "zip"
+
+
+def test_zip_query_caches_parquet_and_reuses(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "orders.zip", "w") as z:
+        z.writestr("orders.csv", "id,amount\n1,9.5\n")
+
+    extract_calls = []
+    real_extract = zipfile.ZipFile.extract
+
+    def counting_extract(self, member, path=None, pwd=None):
+        extract_calls.append(member)
+        return real_extract(self, member, path, pwd)
+
+    monkeypatch.setattr(zipfile.ZipFile, "extract", counting_extract)
+    ts = Tables(tmp_path)
+    first = ts.query("SELECT sum(amount) AS total FROM orders")
+    assert extract_calls == ["orders.csv"]
+    entry = next(p for p in _cache_zip_dir().iterdir() if not p.name.startswith(".tmp-"))
+    assert list(entry.glob("member_0.parquet"))
+
+    second = ts.query("SELECT sum(amount) AS total FROM orders")
+    assert extract_calls == ["orders.csv"]  # second query: no re-extraction
+    assert second["total"].iloc[0] == first["total"].iloc[0] == 9.5
+
+
+def test_zip_cache_invalidated_when_zip_rewritten(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    zip_path = tmp_path / "orders.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("orders.csv", "id,amount\n1,1.0\n")
+    ts = Tables(tmp_path)
+    assert ts.query("SELECT max(amount) AS m FROM orders")["m"].iloc[0] == 1.0
+
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("orders.csv", "id,amount\n1,2.0\n")
+    assert ts.query("SELECT max(amount) AS m FROM orders")["m"].iloc[0] == 2.0
+    assert len(list(_cache_zip_dir().iterdir())) == 2  # both versions cached
+
+
+def test_zip_cache_false_leaves_no_cache(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "orders.zip", "w") as z:
+        z.writestr("orders.csv", "id,amount\n1,9.5\n")
+    out = Tables(tmp_path, cache=False).query("SELECT sum(amount) AS t FROM orders")
+    assert out["t"].iloc[0] == 9.5
+    assert not _cache_zip_dir().exists() or list(_cache_zip_dir().iterdir()) == []
+
+
+def test_zip_cache_corrupt_entry_self_heals(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "orders.zip", "w") as z:
+        z.writestr("orders.csv", "id,amount\n1,9.5\n")
+    ts = Tables(tmp_path)
+    assert ts.query("SELECT sum(amount) AS t FROM orders")["t"].iloc[0] == 9.5
+
+    entry = next(p for p in _cache_zip_dir().iterdir() if not p.name.startswith(".tmp-"))
+    (entry / "member_0.parquet").write_bytes(b"not a parquet file")
+
+    out = ts.query("SELECT sum(amount) AS t FROM orders")  # rebuilds and still answers
+    assert out["t"].iloc[0] == 9.5
+    assert len(list(_cache_zip_dir().iterdir())) == 1
+
+
+def test_zip_cache_unwritable_dir_warns_and_falls_back(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    blocked = tmp_path / "blocked"
+    blocked.write_text("a file, not a dir")  # cache root mkdir will fail on this
+    monkeypatch.setenv("LOCALDB_CACHE_DIR", str(blocked))
+    with zipfile.ZipFile(tmp_path / "orders.zip", "w") as z:
+        z.writestr("orders.csv", "id,amount\n1,9.5\n")
+    with pytest.warns(UserWarning, match="zip cache unavailable"):
+        out = Tables(tmp_path).query("SELECT sum(amount) AS t FROM orders")
+    assert out["t"].iloc[0] == 9.5
+
+
+def test_zip_cache_multi_member_names_preserved(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "archive.zip", "w") as z:
+        z.writestr("one.csv", "id,v\n1,a\n")
+        z.writestr("two.csv", "id,v\n2,b\n")
+    out = Tables(tmp_path).query('SELECT * FROM "archive__two"')
+    assert out["v"].iloc[0] == "b"
+    entry = next(p for p in _cache_zip_dir().iterdir() if not p.name.startswith(".tmp-"))
+    assert sorted(p.name for p in entry.glob("*.parquet")) == ["member_0.parquet", "member_1.parquet"]

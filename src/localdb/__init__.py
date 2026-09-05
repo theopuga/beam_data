@@ -13,6 +13,7 @@ file) is a set of tables you can open by name and join with SQL.
 """
 
 from pathlib import Path
+from typing import Any
 
 from localdb.catalog import load_catalog
 from localdb.fuzzy import FuzzyLinkResult, fuzzy_link_tables
@@ -40,6 +41,6 @@ __all__ = [
 ]
 
 
-def tables(path: str | Path) -> Tables:
+def tables(path: str | Path, **kwargs: Any) -> Tables:
     """Connect to the tables in a downloaded data folder (or SQLite file)."""
-    return Tables(path)
+    return Tables(path, **kwargs)
