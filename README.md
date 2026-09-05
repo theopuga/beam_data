@@ -36,45 +36,55 @@ linking all work. duckdb is only needed for SQL joins across folder files.
 
 ## Reading tables
 
+Open a folder once; every data file in it becomes a table:
+
 ```python
 import localdb
 
-df = localdb.read("data/clients.csv")            # one file, format by extension
-df = localdb.read("data/export.zip")             # single-member zips read directly
-df = localdb.read("data/warehouse.sqlite", table="clients")
-
-ts = localdb.tables("data/downloads/")           # a folder is the table set
-ts.names()                                       # tables by file stem
+ts = localdb.tables("data/downloads/")                  # a folder is the table set
+ts.names()                                              # ["clients", "refs", ...]
 df = ts.get("clients", dtype={"client_id": "string"})   # kwargs reach pandas
 df = ts.get("companies", columns=["CompanyNumber", "PostCode"])  # pruned read
-df = ts.query("SELECT * FROM clients JOIN refs USING (id)")  # needs localdb[sql]
+df = ts.query("SELECT * FROM clients JOIN refs USING (id)")      # needs localdb[sql]
+```
 
+Single files read one-off, format chosen by extension:
+
+```python
+df = localdb.read("data/clients.csv")
+df = localdb.read("data/export.zip")             # single-member zips read directly
+df = localdb.read("data/warehouse.sqlite", table="clients")
 ts = localdb.tables("data/warehouse.sqlite")     # sqlite works the same way
 ```
 
-`columns=` prunes the read where the format supports pushdown (parquet
-`columns=`, csv/tsv/excel/zip `usecols=`, sqlite `SELECT col`); json and
-custom readers read whole and filter. Zip members with csv/tsv content
-join via SQL too: a single-tabular-member zip becomes the zip's stem view,
-a multi-member zip gets one view per member (`<stem>__<member>`). The
-first query on a zip converts its members to parquet in a local cache
-(`$LOCALDB_CACHE_DIR`, size-capped with LRU eviction; `Tables(path,
-cache=False)` to disable) — later queries scan that instead of
-re-extracting and re-parsing the zip every time.
+**Column pruning** — `columns=` prunes the read where the format supports
+pushdown (parquet `columns=`, csv/tsv/excel/zip `usecols=`, sqlite
+`SELECT col`); json and custom readers read whole and filter.
 
-Ambiguous stems (`clients.csv` + `clients.parquet`) raise rather than guess;
-a `.sqlite` file inside a folder is its own `Tables`, not a table. Ugly
-stems can be aliased — `localdb.tables("data/", aliases={"companies":
-"BasicCompanyData-2026-09-01-part1_7"})` — and both `get()` and `query()`
-accept either name (real files win on collision; a missing alias target is
-skipped with a warning).
+**Zip archives** — members with csv/tsv content join via SQL too: a
+single-tabular-member zip becomes the zip's stem view, a multi-member zip
+gets one view per member (`<stem>__<member>`). The first query converts
+members to parquet in a local cache, so later queries skip re-extracting
+and re-parsing the zip every time (size-capped with LRU eviction;
+`Tables(path, cache=False)` to disable).
 
-Padded headers (Companies House files ship ` CompanyNumber`-style columns)
-can be stripped: `read(..., clean_headers=True)` or
-`Tables(path, clean_headers=True)` cleans column names on `get()` and in
-`query()` views (per-call `clean_headers=` wins; `columns=` keeps matching
-the file's raw header — cleaned names come back). Headers that collide
-once stripped raise on read, and skip that view with a warning in queries.
+**Table names** — ambiguous stems (`clients.csv` + `clients.parquet`)
+raise rather than guess, and a `.sqlite` file inside a folder is its own
+`Tables`, not a table. Ugly stems can be aliased, and both `get()` and
+`query()` accept either name (real files win on collision; a missing
+alias target is skipped with a warning):
+
+```python
+ts = localdb.tables("data/", aliases={"companies": "BasicCompanyData-2026-09-01-part1_7"})
+ts.get("companies")                              # alias or real stem, both work
+```
+
+**Padded headers** — Companies House files ship ` CompanyNumber`-style
+columns; `read(..., clean_headers=True)` or `Tables(path,
+clean_headers=True)` strips them on `get()` and in `query()` views
+(per-call override wins; `columns=` keeps matching the file's raw header —
+cleaned names come back). Headers that collide once stripped raise on
+read, and skip that view with a warning in queries.
 
 ## Catalogs
 
