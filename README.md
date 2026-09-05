@@ -17,7 +17,7 @@ No connections, no servers: the files are the tables.
 | Pre-model feature audit | `audit_features(df, target=, holdout_mask=...)` → report |
 | Key standardization | `standardize(df, col, kind=...)` + `register_kind()` |
 | Custom file formats | `register_reader(ext, fn)` |
-| Declare datasets once | `load_catalog("catalog.yaml")` |
+| Declare datasets once | `load_catalog("catalog.yaml")` / `tables_from_catalog(...)` |
 
 Dependencies: pandas + pyyaml. Everything else is optional extras.
 
@@ -63,7 +63,11 @@ cache=False)` to disable) — later queries scan that instead of
 re-extracting and re-parsing the zip every time.
 
 Ambiguous stems (`clients.csv` + `clients.parquet`) raise rather than guess;
-a `.sqlite` file inside a folder is its own `Tables`, not a table.
+a `.sqlite` file inside a folder is its own `Tables`, not a table. Ugly
+stems can be aliased — `localdb.tables("data/", aliases={"companies":
+"BasicCompanyData-2026-09-01-part1_7"})` — and both `get()` and `query()`
+accept either name (real files win on collision; a missing alias target is
+skipped with a warning).
 
 ## Catalogs
 
@@ -76,6 +80,16 @@ fsa_lookup: ${DOWNLOAD_DIR}/fsa_lookup.parquet
 ```python
 tables = localdb.load_catalog("catalog.yaml")
 df = localdb.read(tables["fsa_lookup"])
+```
+
+When the catalog's file entries share one parent folder, open them as a
+single table set aliased by entry name (the flat format doubles as the
+alias map; sqlite entries are excluded — they are their own Tables):
+
+```python
+ts = localdb.tables_from_catalog("catalog.yaml")
+df = ts.get("clients")                                        # alias, not the stem
+df = ts.query("SELECT * FROM clients JOIN fsa_lookup USING (id)")
 ```
 
 ## Linking tables on identifiers
@@ -191,8 +205,9 @@ defaults.
   cache (first query pays the conversion — 850k-row Companies House zip:
   3.0s build, then ~0.02s/query vs 1.8s uncached; cap 10 GB via
   `LOCALDB_CACHE_MAX_GB`, `Tables(path, cache=False)` opts out). Zips
-  whose CSV duckdb cannot convert fall back to per-query extraction
-  (warned once)
+  whose CSV duckdb cannot convert are marked after one failed attempt and
+  skipped on later queries (delete the `<key>.failed` marker or pass
+  `cache=False` to retry)
 - Postal cleaners are per-country, chosen by kind (`postal_code`, `fsa`,
   `uk_postcode`, `cep`, `plz`) — there is no country auto-detection
 - Fuzzy scoring on stdlib difflib suits ~100k candidate pairs with

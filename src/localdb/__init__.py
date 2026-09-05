@@ -15,7 +15,7 @@ file) is a set of tables you can open by name and join with SQL.
 from pathlib import Path
 from typing import Any
 
-from localdb.catalog import load_catalog
+from localdb.catalog import load_catalog, tables_from_catalog
 from localdb.fuzzy import FuzzyLinkResult, fuzzy_link_tables
 from localdb.keys import register_kind, standardize
 from localdb.link import LinkResult, link_tables
@@ -38,6 +38,7 @@ __all__ = [
     "standardize",
     "supported_extensions",
     "tables",
+    "tables_from_catalog",
 ]
 
 

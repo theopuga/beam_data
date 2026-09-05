@@ -42,12 +42,19 @@ class Tables:
     Tables (it is silently absent from the folder's names()).
     """
 
-    def __init__(self, path: str | Path, cache: bool = True) -> None:
-        """cache=False skips the on-disk zip-query cache (per-query temp extraction)."""
+    def __init__(self, path: str | Path, cache: bool = True,
+                 aliases: dict[str, str] | None = None) -> None:
+        """cache=False skips the on-disk zip-query cache (per-query temp extraction).
+
+        aliases= maps short names to file stems for get()/query() (real files
+        take precedence when a stem collides with an alias); ignored for
+        SQLite files, which name their own tables.
+        """
         self.path = Path(path)
         if not self.path.exists():
             raise FileNotFoundError(f"{self.path} does not exist")
         self._cache = cache
+        self._aliases = dict(aliases or {})
         self._is_sqlite = self.path.is_file() and self.path.suffix.lower() in _SQLITE_SUFFIXES
         if not self._is_sqlite and not self.path.is_dir():
             raise NotADirectoryError(
@@ -55,7 +62,7 @@ class Tables:
             )
 
     def names(self) -> list[str]:
-        """All table names available here."""
+        """All table names available here: file stems plus aliases."""
         if self._is_sqlite:
             with sqlite3.connect(self.path) as conn:
                 rows = conn.execute(
@@ -63,7 +70,8 @@ class Tables:
                     "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
                 ).fetchall()
             return sorted(name for (name,) in rows)
-        return sorted({p.stem for p in self.path.iterdir() if _table_file(p)})
+        return sorted({p.stem for p in self.path.iterdir() if _table_file(p)}
+                      | set(self._aliases))
 
     def get(self, name: str, columns: list[str] | None = None,
             **kwargs: Any) -> pd.DataFrame:
@@ -73,10 +81,15 @@ class Tables:
         pushdown (parquet reads columns= directly; csv/tsv/excel/zip read
         with usecols=; sqlite selects the columns in SQL); other formats
         (e.g. json or custom readers) read whole and filter. Reads whole
-        files either way — rows are not streamed.
+        files either way — rows are not streamed. Aliases resolve to their
+        file stem; a real file stem wins over an alias.
         """
         if self._is_sqlite:
             return read(self.path, table=name, columns=columns, **kwargs)
+        if name in self._aliases and name not in {
+            p.stem for p in self.path.iterdir() if _table_file(p)
+        }:
+            name = self._aliases[name]  # real file stems win over aliases
         if columns is not None and "usecols" in kwargs:
             raise ValueError("pass columns= or usecols=, not both")
         matches = sorted(
@@ -109,7 +122,9 @@ class Tables:
         becomes the zip's stem view, a multi-member zip gets one view per
         member named "<stem>__<member>".
         SQLite files are queried directly via the stdlib sqlite3. Tables
-        whose format duckdb cannot read are skipped with a warning.
+        whose format duckdb cannot read are skipped with a warning. Aliases
+        become views selecting from their stem's view (real stems win; an
+        alias whose target view is missing is skipped with a warning).
         """
         if self._is_sqlite:
             with sqlite3.connect(self.path) as conn:
@@ -124,7 +139,8 @@ class Tables:
         extracted: str | None = None
         try:
             skipped = []
-            for stem in self.names():
+            stems = sorted({p.stem for p in self.path.iterdir() if _table_file(p)})
+            for stem in stems:
                 for p in self._files_with_stem(stem):
                     ext = p.suffix.lower().lstrip(".")
                     if ext == "zip":
@@ -154,6 +170,16 @@ class Tables:
                     except duckdb.Error as exc:  # e.g. non-utf8 csv: advisory, not fatal
                         skipped.append(f"{stem} ({exc})")
                     break
+            for alias, target in sorted(self._aliases.items()):
+                if alias in stems:
+                    warnings.warn(
+                        f"alias {alias!r} ignored: a file with that stem exists"
+                    )
+                    continue
+                try:
+                    con.execute(f'CREATE VIEW "{alias}" AS SELECT * FROM "{target}"')
+                except duckdb.Error as exc:  # missing target / failed source view
+                    skipped.append(f"alias {alias} -> {target} ({exc})")
             if skipped:
                 warnings.warn(
                     f"tables not SQL-queryable and skipped: {', '.join(sorted(set(skipped)))}"
@@ -185,6 +211,18 @@ class Tables:
             warnings.warn(f"zip {zip_path.name!r} has no csv/tsv members; skipped")
             return None
         if self._cache:
+            try:
+                from localdb import cache
+
+                if cache.is_failed(cache.zip_cache_root(), cache.zip_key(zip_path)):
+                    warnings.warn(
+                        f"zip {zip_path.name!r}: previous conversion failed; skipped "
+                        "(delete the <key>.failed marker in the cache dir, or pass "
+                        "cache=False, to retry)"
+                    )
+                    return None
+            except (OSError, RuntimeError):
+                pass  # cache unavailable: fall through to the normal flow
             try:
                 self._register_cached_zip_views(con, zip_path, stem, members)
                 return None

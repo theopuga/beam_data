@@ -331,16 +331,82 @@ def test_zip_cache_nested_member_paths(tmp_path):
     assert out["v"].iloc[0] == "a"
 
 
-def test_zip_cache_unconvertible_member_marked_failed(tmp_path):
+def test_zip_cache_unconvertible_member_marked_failed(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     import zipfile
 
     with zipfile.ZipFile(tmp_path / "legacy.zip", "w") as z:
         z.writestr("legacy.csv", "id,nom\n1,caf\xe9\n".encode("latin-1"))  # not utf-8
+
+    extract_calls = []
+    real_extract = zipfile.ZipFile.extract
+
+    def counting_extract(self, member, path=None, pwd=None):
+        extract_calls.append(member)
+        return real_extract(self, member, path, pwd)
+
+    monkeypatch.setattr(zipfile.ZipFile, "extract", counting_extract)
     ts = Tables(tmp_path)
     with pytest.warns(UserWarning, match="zip cache unavailable"):
-        ts.query("SELECT 1 AS x")
+        ts.query("SELECT 1 AS x")  # build attempt fails -> marker -> temp fallback
     markers = [p for p in _cache_zip_dir().iterdir() if p.name.endswith(".failed")]
-    assert len(markers) == 1  # conversion failed once, not silently retried
-    with pytest.warns(UserWarning, match="previous conversion attempt failed"):
-        ts.query("SELECT 1 AS x")  # later queries skip the build retry
+    assert len(markers) == 1
+    assert extract_calls == ["legacy.csv", "legacy.csv"]  # build + fallback
+
+    with pytest.warns(UserWarning, match="previous conversion failed"):
+        ts.query("SELECT 1 AS x")  # marked zip skipped outright, no re-extraction
+    assert extract_calls == ["legacy.csv", "legacy.csv"]  # no extraction this time
+
+
+# --- table aliases ---
+
+
+def test_alias_get_and_names(folder):
+    ts = Tables(folder, aliases={"c": "clients"})
+    assert ts.get("c")["name"].iloc[0] == "a"
+    assert ts.get("clients")["name"].iloc[0] == "a"  # stem still works
+    assert ts.names() == ["c", "clients", "refs"]
+
+
+def test_alias_query_join(folder):
+    pytest.importorskip("duckdb")
+    out = Tables(folder, aliases={"c": "clients"}).query(
+        "SELECT r.ref FROM c JOIN refs r USING (id)"
+    )
+    assert out["ref"].iloc[0] == "x"
+
+
+def test_stem_wins_over_alias(tmp_path):
+    pytest.importorskip("duckdb")
+    pd.DataFrame({"id": [1], "v": ["file"]}).to_csv(tmp_path / "c.csv", index=False)
+    pd.DataFrame({"id": [1], "v": ["json"]}).to_json(tmp_path / "clients.json", orient="records")
+    ts = Tables(tmp_path, aliases={"c": "clients"})
+    assert ts.get("c")["v"].iloc[0] == "file"  # real file beats alias
+    with pytest.warns(UserWarning, match="alias 'c' ignored"):
+        Tables(tmp_path, aliases={"c": "clients"}).query("SELECT * FROM c")
+
+
+def test_alias_to_missing_target_warns_in_query(folder):
+    pytest.importorskip("duckdb")
+    with pytest.warns(UserWarning, match="alias nope -> missing_stem"):
+        out = Tables(folder, aliases={"nope": "missing_stem", "c": "clients"}).query(
+            "SELECT name FROM c"
+        )
+    assert out["name"].iloc[0] == "a"  # broken alias skipped; good ones registered
+
+
+def test_alias_zip_single_member(tmp_path):
+    pytest.importorskip("duckdb")
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "orders-2026-part1.zip", "w") as z:
+        z.writestr("orders-2026-part1.csv", "id,amount\n1,9.5\n")
+    ts = Tables(tmp_path, aliases={"orders": "orders-2026-part1"})
+    out = ts.query("SELECT sum(amount) AS t FROM orders")
+    assert out["t"].iloc[0] == 9.5
+
+
+def test_aliases_ignored_for_sqlite(sqlite_file):
+    ts = Tables(sqlite_file, aliases={"t": "trades"})
+    assert ts.names() == ["trades"]  # sqlite names its own tables
+    assert ts.get("trades")["amt"].iloc[0] == 10.0
