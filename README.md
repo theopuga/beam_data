@@ -190,6 +190,16 @@ train/holdout split with a bias-corrected Cramér's V. `scikit-learn`,
 flags when its dependency is absent. Thresholds are keyword args with
 defaults.
 
+## Data-quality advisory
+
+Mixed-decimal columns ("1 234,56" next to "1234.56") stay object dtype
+after a read, silently breaking sums and joins downstream.
+`localdb.numeric_advisory(df)` reports them: one row per column whose
+values mostly parse as numbers under some local convention (grouped
+thousands, decimal comma, currency symbols, percent), with the dominant
+decimal mark and examples that didn't parse. Advisory only — nothing is
+converted for you.
+
 ## Validated on real data
 
 - Licence/registration extracts (csv + xlsx): links with known ground truth

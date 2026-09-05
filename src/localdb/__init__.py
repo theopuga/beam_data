@@ -21,6 +21,7 @@ from localdb.keys import register_kind, standardize
 from localdb.link import LinkResult, link_tables
 from localdb.readers.core import read, register_reader, supported_extensions
 from localdb.tables import Tables
+from localdb.validate import numeric_advisory
 
 __version__ = "0.1.0"
 
@@ -32,6 +33,7 @@ __all__ = [
     "fuzzy_link_tables",
     "link_tables",
     "load_catalog",
+    "numeric_advisory",
     "read",
     "register_kind",
     "register_reader",
