@@ -69,6 +69,13 @@ stems can be aliased — `localdb.tables("data/", aliases={"companies":
 accept either name (real files win on collision; a missing alias target is
 skipped with a warning).
 
+Padded headers (Companies House files ship ` CompanyNumber`-style columns)
+can be stripped: `read(..., clean_headers=True)` or
+`Tables(path, clean_headers=True)` cleans column names on `get()` and in
+`query()` views (per-call `clean_headers=` wins; `columns=` keeps matching
+the file's raw header — cleaned names come back). Headers that collide
+once stripped raise on read, and skip that view with a warning in queries.
+
 ## Catalogs
 
 ```yaml

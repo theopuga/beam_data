@@ -43,18 +43,22 @@ class Tables:
     """
 
     def __init__(self, path: str | Path, cache: bool = True,
-                 aliases: dict[str, str] | None = None) -> None:
+                 aliases: dict[str, str] | None = None,
+                 clean_headers: bool = False) -> None:
         """cache=False skips the on-disk zip-query cache (per-query temp extraction).
 
         aliases= maps short names to file stems for get()/query() (real files
         take precedence when a stem collides with an alias); ignored for
-        SQLite files, which name their own tables.
+        SQLite files, which name their own tables. clean_headers=True strips
+        surrounding whitespace from column names on get() and in query()
+        views (per-call override wins).
         """
         self.path = Path(path)
         if not self.path.exists():
             raise FileNotFoundError(f"{self.path} does not exist")
         self._cache = cache
         self._aliases = dict(aliases or {})
+        self._clean_headers = clean_headers
         self._is_sqlite = self.path.is_file() and self.path.suffix.lower() in _SQLITE_SUFFIXES
         if not self._is_sqlite and not self.path.is_dir():
             raise NotADirectoryError(
@@ -82,8 +86,10 @@ class Tables:
         with usecols=; sqlite selects the columns in SQL); other formats
         (e.g. json or custom readers) read whole and filter. Reads whole
         files either way — rows are not streamed. Aliases resolve to their
-        file stem; a real file stem wins over an alias.
+        file stem; a real file stem wins over an alias. columns= matches the
+        file's raw header; with clean_headers the cleaned names come back.
         """
+        kwargs.setdefault("clean_headers", self._clean_headers)
         if self._is_sqlite:
             return read(self.path, table=name, columns=columns, **kwargs)
         if name in self._aliases and name not in {
@@ -108,10 +114,12 @@ class Tables:
             if kwarg:
                 kwargs[kwarg] = columns
                 return read(matches[0], **kwargs)
+            if kwargs.get("clean_headers"):  # no pushdown: filter by raw, cleaned comes back
+                columns = [c.strip() if isinstance(c, str) else c for c in columns]
             return read(matches[0], **kwargs)[list(columns)]
         return read(matches[0], **kwargs)
 
-    def query(self, sql: str) -> pd.DataFrame:
+    def query(self, sql: str, clean_headers: bool | None = None) -> pd.DataFrame:
         """Run SQL joining the tables (requires the `sql` extra: duckdb).
 
         Files become views named by their quoted stem (csv/tsv/parquet/json/
@@ -125,6 +133,8 @@ class Tables:
         whose format duckdb cannot read are skipped with a warning. Aliases
         become views selecting from their stem's view (real stems win; an
         alias whose target view is missing is skipped with a warning).
+        clean_headers=True (or the Tables default) registers views with
+        surrounding whitespace stripped from their column names.
         """
         if self._is_sqlite:
             with sqlite3.connect(self.path) as conn:
@@ -137,6 +147,7 @@ class Tables:
             ) from exc
         con = duckdb.connect()
         extracted: str | None = None
+        clean = self._clean_headers if clean_headers is None else clean_headers
         try:
             skipped = []
             stems = sorted({p.stem for p in self.path.iterdir() if _table_file(p)})
@@ -145,7 +156,7 @@ class Tables:
                     ext = p.suffix.lower().lstrip(".")
                     if ext == "zip":
                         try:
-                            extracted = self._register_zip_views(con, p, stem)
+                            extracted = self._register_zip_views(con, p, stem, clean)
                         except Exception as exc:  # noqa: BLE001 — advisory: skip broken zips
                             skipped.append(f"{stem} ({exc})")
                         break
@@ -162,12 +173,12 @@ class Tables:
                         skipped.append(stem)
                         break
                     options = ", header = true, all_varchar = true" if fn == "read_xlsx" else ""
+                    source = f"{fn}('{p.as_posix()}'{options})"
                     try:
-                        con.execute(
-                            f'CREATE VIEW "{stem}" AS '
-                            f"SELECT * FROM {fn}('{p.as_posix()}'{options})"
-                        )
-                    except duckdb.Error as exc:  # e.g. non-utf8 csv: advisory, not fatal
+                        con.execute(f'CREATE VIEW "{stem}" AS {self._view_select(con, source, clean)}')
+                    except (duckdb.Error, ValueError) as exc:
+                        # e.g. non-utf8 csv, headers that collide when stripped:
+                        # advisory, not fatal
                         skipped.append(f"{stem} ({exc})")
                     break
             for alias, target in sorted(self._aliases.items()):
@@ -190,7 +201,8 @@ class Tables:
             if extracted:
                 shutil.rmtree(extracted, ignore_errors=True)
 
-    def _register_zip_views(self, con: Any, zip_path: Path, stem: str) -> str | None:
+    def _register_zip_views(self, con: Any, zip_path: Path, stem: str,
+                            clean: bool) -> str | None:
         """View the zip's tabular members in duckdb.
 
         With caching on, members are converted to parquet in the local cache
@@ -224,7 +236,7 @@ class Tables:
             except (OSError, RuntimeError):
                 pass  # cache unavailable: fall through to the normal flow
             try:
-                self._register_cached_zip_views(con, zip_path, stem, members)
+                self._register_cached_zip_views(con, zip_path, stem, members, clean)
                 return None
             except Exception as exc:  # noqa: BLE001 — advisory: cache is best-effort
                 detail = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
@@ -232,10 +244,10 @@ class Tables:
                     f"zip cache unavailable for {zip_path.name!r} ({detail}); "
                     "using per-query temp extraction"
                 )
-        return self._register_temp_zip_views(con, zip_path, members, stem)
+        return self._register_temp_zip_views(con, zip_path, members, stem, clean)
 
     def _register_cached_zip_views(self, con: Any, zip_path: Path, stem: str,
-                                   members: list[str]) -> None:
+                                   members: list[str], clean: bool) -> None:
         """View the zip's members from the parquet cache, building it if needed."""
         from localdb import cache
 
@@ -253,11 +265,11 @@ class Tables:
                 raise
         names = self._zip_view_names(stem, members)
         try:
-            self._create_parquet_views(con, entry, names)
+            self._create_parquet_views(con, entry, names, clean)
         except Exception:  # noqa: BLE001 — corrupt/incomplete entry: rebuild once
             cache.discard_entry(root, key)
             self._build_zip_cache(root, key, zip_path, members)
-            self._create_parquet_views(con, entry, names)
+            self._create_parquet_views(con, entry, names, clean)
 
     def _build_zip_cache(self, root: Path, key: str, zip_path: Path,
                          members: list[str]) -> None:
@@ -306,15 +318,40 @@ class Tables:
         return names
 
     @staticmethod
-    def _create_parquet_views(con: Any, entry: Path, names: list[str]) -> None:
+    def _view_select(con: Any, source: str, clean: bool) -> str:
+        """The SELECT clause for a view over a duckdb source expression.
+
+        clean=True strips surrounding whitespace from the source's string
+        column names (DESCRIBE gives the raw schema; padded columns are
+        re-aliased). Headers that collide once stripped raise ValueError —
+        callers treat that as advisory, like any unreadable source.
+        """
+        if not clean:
+            return f"SELECT * FROM {source}"
+        cols = [row[0] for row in
+                con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()]
+        stripped = [c.strip() for c in cols]
+        dupes = sorted({c for c in stripped if stripped.count(c) > 1})
+        if dupes:
+            raise ValueError(f"cleaning headers collides columns into: {dupes}")
+        select_list = ", ".join(
+            f'"{c}" AS "{s}"' if c != s else f'"{c}"'
+            for c, s in zip(cols, stripped)
+        )
+        return f"SELECT {select_list} FROM {source}"
+
+    @staticmethod
+    def _create_parquet_views(con: Any, entry: Path, names: list[str],
+                              clean: bool) -> None:
         for i, name in enumerate(names):
             pq = (entry / f"member_{i}.parquet").as_posix().replace("'", "''")
+            source = f"read_parquet('{pq}')"
             con.execute(
-                f'CREATE OR REPLACE VIEW "{name}" AS SELECT * FROM read_parquet(\'{pq}\')'
+                f'CREATE OR REPLACE VIEW "{name}" AS {Tables._view_select(con, source, clean)}'
             )
 
     def _register_temp_zip_views(self, con: Any, zip_path: Path, members: list[str],
-                                 stem: str) -> str | None:
+                                 stem: str, clean: bool) -> str | None:
         """Per-query path (cache off or unavailable): extract to temp, csv views."""
         import zipfile
 
@@ -325,10 +362,8 @@ class Tables:
                 z.extract(member, extracted)
                 path = (Path(extracted) / member).resolve()
                 quoted = path.as_posix().replace("'", "''")
-                con.execute(
-                    f'CREATE VIEW "{names[i]}" AS '
-                    f"SELECT * FROM read_csv_auto('{quoted}')"
-                )
+                source = f"read_csv_auto('{quoted}')"
+                con.execute(f'CREATE VIEW "{names[i]}" AS {self._view_select(con, source, clean)}')
         return extracted
 
     def link(self, left_table: str, right_table: str, left_on: str,

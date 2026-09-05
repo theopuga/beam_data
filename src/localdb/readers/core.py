@@ -30,10 +30,34 @@ def supported_extensions() -> list[str]:
     return sorted(_READERS)
 
 
-def read(path: str | Path, **kwargs: Any) -> pd.DataFrame:
+def strip_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Strip leading/trailing whitespace from string column names, in place.
+
+    Non-string columns (e.g. integer headers) are left untouched. Raises
+    rather than guessing: stripping that collides two columns into one name,
+    or empties a name entirely, is a ValueError.
+    """
+    stripped = [c.strip() if isinstance(c, str) else c for c in df.columns]
+    seen: dict[str, int] = {}
+    for c in stripped:
+        if isinstance(c, str):
+            if not c:
+                raise ValueError("a column name is only whitespace; cannot clean headers")
+            seen[c] = seen.get(c, 0) + 1
+    dupes = sorted(c for c, n in seen.items() if n > 1)
+    if dupes:
+        raise ValueError(f"cleaning headers collides columns into: {dupes}")
+    df.columns = stripped
+    return df
+
+
+def read(path: str | Path, clean_headers: bool = False, **kwargs: Any) -> pd.DataFrame:
     """Read one data file into a DataFrame; format is chosen by extension.
 
     kwargs pass through to the underlying pandas loader (e.g. sep=, na_values=).
+    clean_headers=True strips surrounding whitespace from string column
+    names after the read (padded headers like " CompanyNumber" become
+    "CompanyNumber"); it is never forwarded to the loader.
     """
     p = Path(path)
     if not p.is_file():
@@ -44,7 +68,8 @@ def read(path: str | Path, **kwargs: Any) -> pd.DataFrame:
         raise ValueError(
             f"no reader registered for {ext!r}; supported: {supported_extensions()}"
         )
-    return reader(p, **kwargs)
+    df = reader(p, **kwargs)
+    return strip_column_names(df) if clean_headers else df
 
 
 def _read_csv(path: Path, **kwargs: Any) -> pd.DataFrame:
